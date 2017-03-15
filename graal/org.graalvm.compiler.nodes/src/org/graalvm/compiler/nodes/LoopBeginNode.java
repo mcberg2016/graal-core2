@@ -45,7 +45,16 @@ public final class LoopBeginNode extends AbstractMergeNode implements IterableNo
     protected double loopFrequency;
     protected int nextEndIndex;
     protected int unswitches;
+    protected int splits;
     protected int inversionCount;
+    protected LoopType loopType;
+
+    public enum LoopType {
+        SIMPLE_LOOP,
+        PRE_LOOP,
+        MAIN_LOOP,
+        POST_LOOP
+    }
 
     /** See {@link LoopEndNode#canSafepoint} for more information. */
     boolean canEndsSafepoint;
@@ -55,7 +64,34 @@ public final class LoopBeginNode extends AbstractMergeNode implements IterableNo
     public LoopBeginNode() {
         super(TYPE);
         loopFrequency = 1;
+        unswitches = 0;
+        splits = 0;
         this.canEndsSafepoint = true;
+        loopType = LoopType.SIMPLE_LOOP;
+    }
+
+    public void setPreLoop() {
+        loopType = LoopType.PRE_LOOP;
+    }
+
+    public boolean isPreLoop() {
+        return (loopType == LoopType.PRE_LOOP);
+    }
+
+    public void setMainLoop() {
+        loopType = LoopType.MAIN_LOOP;
+    }
+
+    public boolean isMainLoop() {
+        return (loopType == LoopType.MAIN_LOOP);
+    }
+
+    public void setPostLoop() {
+        loopType = LoopType.POST_LOOP;
+    }
+
+    public boolean isPostLoop() {
+        return (loopType == LoopType.POST_LOOP);
     }
 
     /** Disables safepoint for the whole loop, i.e., for all {@link LoopEndNode loop ends}. */
@@ -122,9 +158,21 @@ public final class LoopBeginNode extends AbstractMergeNode implements IterableNo
         return result;
     }
 
+    public boolean isSingleEntryLoop() {
+        return (forwardEndCount() == 1);
+    }
+
     public AbstractEndNode forwardEnd() {
         assert forwardEndCount() == 1;
         return forwardEndAt(0);
+    }
+
+    public int splits() {
+        return splits;
+    }
+
+    public void incrementSplits() {
+            splits++;
     }
 
     @Override

@@ -226,6 +226,9 @@ public final class SchedulePhase extends Phase {
                                     }
                                 }
                             }
+                            if (floatingReadNode.isAnchored()) {
+                                latestBlock = currentBlock;
+                            }
                         }
 
                         if (latestBlock == null) {

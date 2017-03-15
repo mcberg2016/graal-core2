@@ -120,6 +120,10 @@ public final class CommitAllocationNode extends FixedWithNextNode implements Vir
         lockIndexes.add(locks.size());
     }
 
+    public boolean hasLocks() {
+        return (lockIndexes.size() > 0);
+    }
+
     @Override
     public void virtualize(VirtualizerTool tool) {
         int pos = 0;

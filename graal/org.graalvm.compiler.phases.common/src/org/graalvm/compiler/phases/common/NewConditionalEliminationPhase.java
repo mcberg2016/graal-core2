@@ -250,6 +250,10 @@ public class NewConditionalEliminationPhase extends BasePhase<PhaseContext> {
         }
 
         protected void processGuard(GuardNode node) {
+            // Do not rewire side effect guards
+            if (node.isEmptyReason()) {
+                return;
+            }
             if (!tryProveGuardCondition(node, node.getCondition(), (guard, result, guardedValueStamp, newInput) -> {
                 if (result != node.isNegated()) {
                     node.replaceAndDelete(guard.asNode());

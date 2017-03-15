@@ -285,7 +285,7 @@ public class LoopEx {
                 default:
                     throw GraalError.shouldNotReachHere();
             }
-            counted = new CountedLoopInfo(this, iv, limit, oneOff, negated ? ifNode.falseSuccessor() : ifNode.trueSuccessor());
+            counted = new CountedLoopInfo(this, iv, ifNode, limit, oneOff, negated ? ifNode.falseSuccessor() : ifNode.trueSuccessor());
             return true;
         }
         return false;

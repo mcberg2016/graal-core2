@@ -24,11 +24,16 @@ package org.graalvm.compiler.core.phases;
 
 import static org.graalvm.compiler.core.common.GraalOptions.ConditionalElimination;
 import static org.graalvm.compiler.core.common.GraalOptions.ImmutableCode;
+import static org.graalvm.compiler.core.common.GraalOptions.LoopInsertPrePost;
 import static org.graalvm.compiler.core.common.GraalOptions.OptDeoptimizationGrouping;
 import static org.graalvm.compiler.core.common.GraalOptions.OptFloatingReads;
+import static org.graalvm.compiler.core.common.GraalOptions.OptLoopTransform;
 import static org.graalvm.compiler.core.common.GraalOptions.ReassociateInvariants;
 import static org.graalvm.compiler.core.common.GraalOptions.VerifyHeapAtReturn;
 
+import org.graalvm.compiler.loop.DefaultLoopPolicies;
+import org.graalvm.compiler.loop.LoopPolicies;
+import org.graalvm.compiler.loop.phases.LoopInsertPrePostLoopsPhase;
 import org.graalvm.compiler.loop.phases.LoopSafepointEliminationPhase;
 import org.graalvm.compiler.loop.phases.ReassociateInvariantPhase;
 import org.graalvm.compiler.nodes.spi.LoweringTool;
@@ -53,6 +58,13 @@ public class MidTier extends PhaseSuite<MidTierContext> {
         CanonicalizerPhase canonicalizer = new CanonicalizerPhase();
         if (ImmutableCode.getValue(options)) {
             canonicalizer.disableReadCanonicalization();
+        }
+
+        LoopPolicies loopPolicies = createLoopPolicies();
+        if (OptLoopTransform.getValue(options)) {
+            if (LoopInsertPrePost.getValue(options)) {
+                appendPhase(new LoopInsertPrePostLoopsPhase(canonicalizer, loopPolicies));
+            }
         }
 
         appendPhase(new LockEliminationPhase());
@@ -88,5 +100,9 @@ public class MidTier extends PhaseSuite<MidTierContext> {
         }
 
         appendPhase(canonicalizer);
+    }
+
+    public LoopPolicies createLoopPolicies() {
+        return new DefaultLoopPolicies();
     }
 }

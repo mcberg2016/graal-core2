@@ -29,6 +29,7 @@ import org.graalvm.compiler.graph.Node;
 import org.graalvm.compiler.nodes.AbstractBeginNode;
 import org.graalvm.compiler.nodes.AbstractMergeNode;
 import org.graalvm.compiler.nodes.DeoptimizingNode;
+import org.graalvm.compiler.nodes.EndNode;
 import org.graalvm.compiler.nodes.FixedNode;
 import org.graalvm.compiler.nodes.FrameState;
 import org.graalvm.compiler.nodes.LoopBeginNode;
@@ -97,8 +98,18 @@ public class FrameStateAssignmentPhase extends Phase {
 
         @Override
         protected FrameState merge(AbstractMergeNode merge, List<FrameState> states) {
-            FrameState singleFrameState = singleFrameState(states);
-            return singleFrameState == null ? merge.stateAfter() : singleFrameState;
+            FrameState curFrameState = singleFrameState(states);
+            if (curFrameState == null) {
+                curFrameState = merge.stateAfter();
+                if (curFrameState == null) {
+                    FrameState firstState = states.get(0);
+                    EndNode firstEnd = merge.forwardEndAt(0);
+                    if (firstEnd != null && firstEnd.predecessor() instanceof LoopExitNode) {
+                        curFrameState = firstState;
+                    }
+                }
+            }
+            return curFrameState;
         }
 
         @Override

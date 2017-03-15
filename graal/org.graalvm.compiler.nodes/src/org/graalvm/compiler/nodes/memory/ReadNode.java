@@ -41,6 +41,7 @@ import org.graalvm.compiler.nodes.CanonicalizableLocation;
 import org.graalvm.compiler.nodes.ConstantNode;
 import org.graalvm.compiler.nodes.FrameState;
 import org.graalvm.compiler.nodes.ValueNode;
+import org.graalvm.compiler.nodes.GuardNode;
 import org.graalvm.compiler.nodes.extended.GuardingNode;
 import org.graalvm.compiler.nodes.memory.address.AddressNode;
 import org.graalvm.compiler.nodes.memory.address.OffsetAddressNode;
@@ -94,7 +95,19 @@ public class ReadNode extends FloatableAccessNode implements LIRLowerableAccess,
     @Override
     public FloatingAccessNode asFloatingNode(MemoryNode lastLocationAccess) {
         try (DebugCloseable position = withNodeSourcePosition()) {
-            return graph().unique(new FloatingReadNode(getAddress(), getLocationIdentity(), lastLocationAccess, stamp(), getGuard(), getBarrierType()));
+            GuardingNode guardingNode = getGuard();
+            GuardNode guard = null;
+            if (guardingNode != null && guardingNode instanceof GuardNode) {
+                guard = (GuardNode) guardingNode;
+            }
+            FloatingReadNode newAccessNode = null;
+            if (guard != null && guard.isEmptyReason()) {
+                newAccessNode = graph().addWithoutUnique(new FloatingReadNode(getAddress(), getLocationIdentity(), lastLocationAccess, stamp(), getGuard(), getBarrierType()));
+                newAccessNode.setAnchored();
+            } else {
+                newAccessNode = graph().unique(new FloatingReadNode(getAddress(), getLocationIdentity(), lastLocationAccess, stamp(), getGuard(), getBarrierType()));
+            }
+            return newAccessNode;
         }
     }
 
