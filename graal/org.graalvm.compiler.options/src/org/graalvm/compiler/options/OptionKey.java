@@ -22,7 +22,7 @@
  */
 package org.graalvm.compiler.options;
 
-import java.util.ServiceLoader;
+import java.util.Formatter;
 
 import org.graalvm.util.EconomicMap;
 
@@ -56,13 +56,35 @@ public class OptionKey<T> {
     }
 
     /**
+     * Checks that a descriptor exists for this key after triggering loading of descriptors.
+     */
+    protected boolean checkDescriptorExists() {
+        OptionKey.Lazy.init();
+        if (descriptor == null) {
+            Formatter buf = new Formatter();
+            buf.format("Could not find a descriptor for an option key. The most likely cause is " +
+                            "a dependency on the %s annotation without a dependency on the " +
+                            "org.graalvm.compiler.options.processor.OptionProcessor annotation processor.", Option.class.getName());
+            StackTraceElement[] stackTrace = new Exception().getStackTrace();
+            if (stackTrace.length > 2 &&
+                            stackTrace[1].getClassName().equals(OptionKey.class.getName()) &&
+                            stackTrace[1].getMethodName().equals("getValue")) {
+                String caller = stackTrace[2].getClassName();
+                buf.format(" In suite.py, add GRAAL_OPTIONS_PROCESSOR to the \"annotationProcessors\" attribute of the project " +
+                                "containing %s.", caller);
+            }
+            throw new AssertionError(buf.toString());
+        }
+        return true;
+    }
+
+    /**
      * Mechanism for lazily loading all available options which has the side effect of assigning
      * names to the options.
      */
     static class Lazy {
         static {
-            ServiceLoader<OptionDescriptors> loader = ServiceLoader.load(OptionDescriptors.class, OptionDescriptors.class.getClassLoader());
-            for (OptionDescriptors opts : loader) {
+            for (OptionDescriptors opts : OptionsParser.getOptionsLoader()) {
                 for (OptionDescriptor desc : opts) {
                     desc.getName();
                 }
@@ -112,6 +134,7 @@ public class OptionKey<T> {
      * Gets the value of this option in {@code values}.
      */
     public T getValue(OptionValues values) {
+        assert checkDescriptorExists();
         return values.get(this);
     }
 
