@@ -94,6 +94,7 @@ import org.graalvm.compiler.nodes.virtual.CommitAllocationNode;
 import org.graalvm.compiler.phases.common.CanonicalizerPhase;
 import org.graalvm.compiler.phases.tiers.PhaseContext;
 
+import jdk.vm.ci.meta.JavaConstant;
 import jdk.vm.ci.meta.JavaKind;
 
 public abstract class LoopTransformations {
@@ -287,12 +288,13 @@ public abstract class LoopTransformations {
         for (PhiNode prePhiNode : preLoopBegin.valuePhis()) {
             PhiNode postPhiNode = postLoop.getDuplicatedNode(prePhiNode);
             PhiNode mainPhiNode = mainLoop.getDuplicatedNode(prePhiNode);
+            ValuePhiNode postMergeIvValues = null;
             if (boundsExpressions.isEmpty()) {
                 postPhiNode.initializeValueAt(phiIndex, mainPhiNode);
             } else {
                 JavaKind elementKind = prePhiNode.getStackKind();
                 Stamp postInitValueStamp = StampFactory.forKind(elementKind);
-                ValuePhiNode postMergeIvValues = graph.addWithoutUnique(new ValuePhiNode(postInitValueStamp, mainMergeNode));
+                postMergeIvValues = graph.addWithoutUnique(new ValuePhiNode(postInitValueStamp, mainMergeNode));
                 postMergeIvValues.addInput(mainPhiNode);
                 for (Node curNode : boundsExpressions) {
                     // Add as many pre phi values to carry as there are bounds (i.e. test paths)
@@ -305,6 +307,8 @@ public abstract class LoopTransformations {
             List<Node> workList = null;
             for (Node usage : prePhiNode.usages()) {
                 if (usage == mainPhiNode) {
+                    continue;
+                } else if (usage == postMergeIvValues) {
                     continue;
                 } else if (usage instanceof ValuePhiNode) {
                     ValuePhiNode curPhi = (ValuePhiNode) usage;
@@ -714,6 +718,7 @@ public abstract class LoopTransformations {
         }
         if (isCanonical) {
             isCanonical = false;
+            ValueNode outerLoopPhi = limitTestContainsOuterPhi(loop);
             LoopFragmentWhole origLoop = loop.whole();
             NodeIterable<AbstractBeginNode> blocks = LoopFragment.toHirBlocks(origLoop.loop().loop().getBlocks());
             // TODO - need a cost metric when flow present and need to extend design some
@@ -723,11 +728,23 @@ public abstract class LoopTransformations {
                 // Does the original loop have constant stride
                 if (iv.isConstantStride()) {
                     ValueNode loopPhi = iv.valueNode();
+                    boolean splittingOk = true;
+                    // If we have a zero trip loop scenario, we will need to avoid splitting for now.
+                    if (outerLoopPhi != null) {
+                        ValueNode initIv = counted.getStart();
+                        if (initIv instanceof ConstantNode) {
+                            ValuePhiNode cmpIv = (ValuePhiNode) outerLoopPhi;
+                            ValueNode cmpInit = cmpIv.valueAt(0);
+                            if (initIv == cmpInit) {
+                                splittingOk = false;
+                            }
+                        }
+                    }
                     // Does this loop have a single exit?
-                    if (curBeginNode.loopExits().count() == 1) {
+                    if (curBeginNode.loopExits().count() == 1 && splittingOk) {
                         EndNode endNode = getSingleEndFromLoop(curBeginNode);
                         // Loops connected simply for now
-                        if (endNode != null && endNode.merge().forwardEndCount() < 3) {
+                        if (endNode != null) {
                             // Look for other kinds of excepting guards, calls or side effects
                             if (curBeginNode.isSingleEntryLoop()) {
                                 int boundsCount = 0;
@@ -767,6 +784,28 @@ public abstract class LoopTransformations {
         return isCanonical;
     }
 
+    public static ValueNode limitTestContainsOuterPhi(LoopEx loop) {
+        ValueNode parentPhi = null;
+        CountedLoopInfo counted = loop.counted();
+        IfNode loopLimit = counted.getLimitTest();
+        LogicNode ifTest = loopLimit.condition();
+        CompareNode compareNode = (CompareNode) ifTest;
+        ValueNode varX = compareNode.getX();
+        ValueNode varY = compareNode.getY();
+        InductionVariable iv = counted.getCounter();
+        ValueNode phi = iv.valueNode();
+        if (varX instanceof ValuePhiNode && varX != phi) {
+            if (isParentLoopPhiVar(varX, phi)) {
+                parentPhi = varX;
+            }
+        } else if (varY instanceof ValuePhiNode && varY != phi) {
+            if (isParentLoopPhiVar(varY, phi)) {
+               parentPhi = varY;
+            }
+        }
+        return parentPhi;
+    }
+
     public static boolean canEliminateBounds(ValueNode phi, GuardNode guard) {
         boolean boundsOk = false;
         LogicNode condition = guard.getCondition();
@@ -792,5 +831,17 @@ public abstract class LoopTransformations {
             }
         }
         return boundsOk;
+    }
+
+    public static boolean isParentLoopPhiVar(ValueNode phi, ValueNode inductionPhi) {
+        boolean parentLoopPhi = false;
+        ValuePhiNode cmpPhi = (ValuePhiNode) phi;
+        ValuePhiNode curPhi = (ValuePhiNode) inductionPhi;
+        if (cmpPhi.merge() instanceof LoopBeginNode) {
+            if (cmpPhi.merge() != curPhi.merge()) {
+                parentLoopPhi = true;
+            }
+        }
+        return parentLoopPhi;
     }
 }
