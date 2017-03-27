@@ -37,7 +37,6 @@ public abstract class FloatingAccessNode extends FloatingGuardedNode implements 
 
     @Input(InputType.Association) AddressNode address;
     protected final LocationIdentity location;
-    protected boolean anchored;
 
     protected BarrierType barrierType;
 
@@ -45,7 +44,6 @@ public abstract class FloatingAccessNode extends FloatingGuardedNode implements 
         super(c, stamp);
         this.address = address;
         this.location = location;
-        this.anchored = false;
     }
 
     protected FloatingAccessNode(NodeClass<? extends FloatingAccessNode> c, AddressNode address, LocationIdentity location, Stamp stamp, GuardingNode guard, BarrierType barrierType) {
@@ -53,7 +51,6 @@ public abstract class FloatingAccessNode extends FloatingGuardedNode implements 
         this.address = address;
         this.location = location;
         this.barrierType = barrierType;
-        this.anchored = false;
     }
 
     @Override
@@ -77,12 +74,4 @@ public abstract class FloatingAccessNode extends FloatingGuardedNode implements 
     }
 
     public abstract FixedAccessNode asFixedNode();
-
-    public boolean isAnchored() {
-        return anchored;
-    }
-
-    public void setAnchored() {
-        anchored = true;
-    }
 }

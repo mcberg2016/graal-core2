@@ -70,6 +70,10 @@ public final class LoopBeginNode extends AbstractMergeNode implements IterableNo
         loopType = LoopType.SIMPLE_LOOP;
     }
 
+    public boolean isSimpleLoop() {
+        return (loopType == LoopType.SIMPLE_LOOP);
+    }
+
     public void setPreLoop() {
         loopType = LoopType.PRE_LOOP;
     }

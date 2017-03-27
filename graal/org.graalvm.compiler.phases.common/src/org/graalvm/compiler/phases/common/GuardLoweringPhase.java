@@ -43,11 +43,6 @@ import org.graalvm.compiler.phases.graph.ScheduledNodeIterator;
 import org.graalvm.compiler.phases.schedule.SchedulePhase;
 import org.graalvm.compiler.phases.schedule.SchedulePhase.SchedulingStrategy;
 import org.graalvm.compiler.phases.tiers.MidTierContext;
-import org.graalvm.util.Equivalence;
-import org.graalvm.util.EconomicMap;
-
-import jdk.vm.ci.meta.DeoptimizationReason;
-import jdk.vm.ci.meta.JavaConstant;
 
 /**
  * This phase lowers {@link GuardNode GuardNodes} into corresponding control-flow structure and
@@ -90,28 +85,24 @@ public class GuardLoweringPhase extends BasePhase<MidTierContext> {
         private void lowerToIf(GuardNode guard) {
             try (DebugCloseable position = guard.withNodeSourcePosition()) {
                 StructuredGraph graph = guard.graph();
+                AbstractBeginNode fastPath = graph.add(new BeginNode());
                 @SuppressWarnings("deprecation")
                 int debugId = useGuardIdAsDebugId ? guard.getId() : DeoptimizeNode.DEFAULT_DEBUG_ID;
-                if (guard.isEmptyReason() == false) {
-                    AbstractBeginNode fastPath = graph.add(new BeginNode());
-                    DeoptimizeNode deopt = graph.add(new DeoptimizeNode(guard.getAction(), guard.getReason(), debugId, guard.getSpeculation(), null));
-                    AbstractBeginNode deoptBranch = BeginNode.begin(deopt);
-                    AbstractBeginNode trueSuccessor;
-                    AbstractBeginNode falseSuccessor;
-                    insertLoopExits(deopt);
-                    if (guard.isNegated()) {
-                        trueSuccessor = deoptBranch;
-                        falseSuccessor = fastPath;
-                    } else {
-                        trueSuccessor = fastPath;
-                        falseSuccessor = deoptBranch;
-                    }
-                    IfNode ifNode = graph.add(new IfNode(guard.getCondition(), trueSuccessor, falseSuccessor, trueSuccessor == fastPath ? 1 : 0));
-                    guard.replaceAndDelete(fastPath);
-                    insert(ifNode, fastPath);
+                DeoptimizeNode deopt = graph.add(new DeoptimizeNode(guard.getAction(), guard.getReason(), debugId, guard.getSpeculation(), null));
+                AbstractBeginNode deoptBranch = BeginNode.begin(deopt);
+                AbstractBeginNode trueSuccessor;
+                AbstractBeginNode falseSuccessor;
+                insertLoopExits(deopt);
+                if (guard.isNegated()) {
+                    trueSuccessor = deoptBranch;
+                    falseSuccessor = fastPath;
                 } else {
-                    guard.replaceAndDelete(guard.getAnchor().asNode());
+                    trueSuccessor = fastPath;
+                    falseSuccessor = deoptBranch;
                 }
+                IfNode ifNode = graph.add(new IfNode(guard.getCondition(), trueSuccessor, falseSuccessor, trueSuccessor == fastPath ? 1 : 0));
+                guard.replaceAndDelete(fastPath);
+                insert(ifNode, fastPath);
             }
         }
 

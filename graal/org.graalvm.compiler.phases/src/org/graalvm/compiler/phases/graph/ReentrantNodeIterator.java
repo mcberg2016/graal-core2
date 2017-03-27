@@ -90,8 +90,7 @@ public final class ReentrantNodeIterator {
         }
         for (LoopExitNode exit : loop.loopExits()) {
             if (blockEndStates.containsKey(exit)) {
-                StateT state = blockEndStates.get(exit);
-                info.exitStates.put(exit, state);
+                info.exitStates.put(exit, blockEndStates.get(exit));
             }
         }
         return info;

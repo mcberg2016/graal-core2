@@ -39,13 +39,13 @@ import org.graalvm.compiler.core.common.type.StampFactory;
 import org.graalvm.compiler.debug.Debug;
 import org.graalvm.compiler.graph.Node;
 import org.graalvm.compiler.graph.Position;
-import org.graalvm.compiler.loop.BasicInductionVariable;
 import org.graalvm.compiler.loop.CountedLoopInfo;
 import org.graalvm.compiler.loop.InductionVariable;
 import org.graalvm.compiler.loop.InductionVariable.Direction;
 import static org.graalvm.compiler.loop.MathUtil.add;
 import static org.graalvm.compiler.loop.MathUtil.sub;
 import org.graalvm.compiler.loop.LoopEx;
+import org.graalvm.compiler.loop.LoopFragmentInside;
 import org.graalvm.compiler.loop.LoopFragmentWhole;
 import org.graalvm.compiler.loop.LoopFragment;
 import org.graalvm.compiler.nodeinfo.InputType;
@@ -73,23 +73,19 @@ import org.graalvm.compiler.nodes.StructuredGraph;
 import org.graalvm.compiler.nodes.ValueNode;
 import org.graalvm.compiler.nodes.ValuePhiNode;
 import org.graalvm.compiler.nodes.calc.AddNode;
-import org.graalvm.compiler.nodes.calc.BinaryArithmeticNode;
 import org.graalvm.compiler.nodes.calc.CompareNode;
 import org.graalvm.compiler.nodes.calc.ConditionalNode;
 import org.graalvm.compiler.nodes.calc.IntegerBelowNode;
 import org.graalvm.compiler.nodes.calc.IntegerEqualsNode;
 import org.graalvm.compiler.nodes.calc.IntegerLessThanNode;
-import org.graalvm.compiler.nodes.calc.LeftShiftNode;
 import org.graalvm.compiler.nodes.calc.SubNode;
-import org.graalvm.compiler.nodes.calc.ZeroExtendNode;
 import org.graalvm.compiler.nodes.cfg.Block;
 import org.graalvm.compiler.nodes.extended.GuardingNode;
 import org.graalvm.compiler.nodes.extended.SwitchNode;
 import org.graalvm.compiler.nodes.memory.ReadNode;
-import org.graalvm.compiler.nodes.memory.WriteNode;
+import org.graalvm.compiler.nodes.memory.FixedAccessNode;
 import org.graalvm.compiler.nodes.memory.HeapAccess.BarrierType;
 import org.graalvm.compiler.nodes.memory.address.AddressNode;
-import org.graalvm.compiler.nodes.memory.address.OffsetAddressNode;
 import org.graalvm.compiler.nodes.virtual.CommitAllocationNode;
 import org.graalvm.compiler.phases.common.CanonicalizerPhase;
 import org.graalvm.compiler.phases.tiers.PhaseContext;
@@ -185,7 +181,6 @@ public abstract class LoopTransformations {
             EndNode preEndNode = getSingleEndFromLoop(preLoopBegin);
             AbstractMergeNode preMergeNode = preEndNode.merge();
             InductionVariable preIv = preCounted.getCounter();
-            int phiIndex = 0;
             LoopExitNode preLoopExitNode = getSingleExitFromLoop(preLoopBegin);
             FixedNode continuationNode = preLoopExitNode.next();
             boolean haveBounds = (boundsExpressions.isEmpty() == false);
@@ -206,9 +201,8 @@ public abstract class LoopTransformations {
             EndNode postEndNode = getSingleEndFromLoop(postLoopBegin);
             preMergeNode = postEndNode.merge();
             preMergeNode.clearEnds();
-            AbstractBeginNode preLandingNode = graph.add(new BeginNode());
             LoopExitNode postLoopExitNode = getSingleExitFromLoop(postLoopBegin);
-            preLoopExitNode.setNext(preLandingNode);
+            cleanPostLoopExit(postLoopExitNode);
             if (preMergeNode.usages().isEmpty()) {
                 preMergeNode.safeDelete();
             } else {
@@ -221,14 +215,12 @@ public abstract class LoopTransformations {
             LoopBeginNode mainLoopBegin = mainLoop.getDuplicatedNode(preLoopBegin);
             mainLoopBegin.setMainLoop();
             EndNode mainEndNode = getSingleEndFromLoop(mainLoopBegin);
-            if (haveBounds) {
-                removeChecks(preLoop, mainLoop);
-            }
+            ValueNode origLimit = null;
 
             // Update the main loop phi initialization to carry from the pre loop
             for (PhiNode prePhiNode : preLoopBegin.valuePhis()) {
                 PhiNode mainPhiNode = mainLoop.getDuplicatedNode(prePhiNode);
-                mainPhiNode.initializeValueAt(phiIndex, prePhiNode);
+                mainPhiNode.initializeValueAt(0, prePhiNode);
             }
 
             AbstractMergeNode mainMergeNode = mainEndNode.merge();
@@ -244,18 +236,23 @@ public abstract class LoopTransformations {
                     mainMergeNode.prepareDelete(mainLandingNode);
                     mainMergeNode.safeDelete();
                 }
-                preLandingNode.setNext(mainLoopBegin.forwardEnd());
+                preLoopExitNode.setNext(mainLoopBegin.forwardEnd());
             } else {
                 AbstractBeginNode mainBeginNode = BeginNode.begin(mainLoopBegin.forwardEnd());
                 // Add limit based range checks to guard main loop entry/execution
-                ValueNode origLimit = getPreLoopMaxBound(preLimit, preIv, preCounted);
-                assert (origLimit != null);
                 mainMergeNode.clearEnds();
                 mainMergeNode.addForwardEnd(mainEndNode);
                 mainMergeNode.setNext(postEntryNode);
+                origLimit = getPreLoopMaxBound(preLimit, preIv, preCounted);
+                assert (origLimit != null);
                 IfNode firstIf = addEntryTestsForMainLoop(boundsExpressions, mainBeginNode, mainMergeNode, origLimit, arrayLengthTrip);
                 assert (firstIf != null);
-                preLandingNode.setNext(firstIf);
+                preLoopExitNode.setNext(firstIf);
+            }
+
+            // Remove bounds checks if we have them
+            if (haveBounds) {
+                removeChecks(preLoop, mainLoop);
             }
 
             // Add and update any phi edges as per merge usage as needed and update usages
@@ -278,19 +275,37 @@ public abstract class LoopTransformations {
         }
     }
 
+    public static void cleanPostLoopExit(LoopExitNode postLoopExitNode) {
+        List<Node> workList = new ArrayList<>();
+        // Clean up the postLoopExitNode before we move usages from the pre loops exit
+        for (Node usage : postLoopExitNode.usages()) {
+            workList.add(usage);
+        }
+        for (Node node : workList) {
+            if (node instanceof GuardNode) {
+                if (node.usages().isEmpty()) {
+                    node.safeDelete();
+                }
+            }
+        }
+    }
+
     public static void processPreLoopPhis(LoopEx loop, List<Node> boundsExpressions, LoopFragmentWhole mainLoop, LoopFragmentWhole postLoop, AbstractMergeNode mainMergeNode,
                     AbstractMergeNode postMergeNode) {
         // process phis for the post loop
-        int phiIndex = 0;
         LoopBeginNode preLoopBegin = loop.loopBegin();
         LoopBeginNode postLoopBegin = postLoop.getDuplicatedNode(preLoopBegin);
         StructuredGraph graph = preLoopBegin.graph();
+        FrameState mainMergeState = null;
+        if (boundsExpressions.isEmpty() == false) {
+            mainMergeState = postLoopBegin.stateAfter().duplicateWithVirtualState();
+        }
         for (PhiNode prePhiNode : preLoopBegin.valuePhis()) {
             PhiNode postPhiNode = postLoop.getDuplicatedNode(prePhiNode);
             PhiNode mainPhiNode = mainLoop.getDuplicatedNode(prePhiNode);
             ValuePhiNode postMergeIvValues = null;
             if (boundsExpressions.isEmpty()) {
-                postPhiNode.initializeValueAt(phiIndex, mainPhiNode);
+                postPhiNode.initializeValueAt(0, mainPhiNode);
             } else {
                 JavaKind elementKind = prePhiNode.getStackKind();
                 Stamp postInitValueStamp = StampFactory.forKind(elementKind);
@@ -300,11 +315,16 @@ public abstract class LoopTransformations {
                     // Add as many pre phi values to carry as there are bounds (i.e. test paths)
                     postMergeIvValues.addInput(prePhiNode);
                 }
-                postPhiNode.initializeValueAt(phiIndex, postMergeIvValues);
+                postPhiNode.initializeValueAt(0, postMergeIvValues);
+                for (int i = 0; i < mainMergeState.values().count(); i++) {
+                    if (mainMergeState.values().get(i) == postPhiNode) {
+                        mainMergeState.values().set(i, postMergeIvValues);
+                    }
+                }
             }
 
             // Build a work list to update the pre loop phis to the post loops phis
-            List<Node> workList = null;
+            List<Node> workList = new ArrayList<>();
             for (Node usage : prePhiNode.usages()) {
                 if (usage == mainPhiNode) {
                     continue;
@@ -317,18 +337,17 @@ public abstract class LoopTransformations {
                     }
                 }
                 if (loop.isOutsideLoop(usage)) {
-                    if (workList == null) {
-                        workList = new ArrayList<>();
-                    }
                     workList.add(usage);
                 }
             }
-            if (workList != null) {
-                for (Node node : workList) {
-                    node.replaceFirstInput(prePhiNode, postPhiNode);
-                }
+            for (Node node : workList) {
+                node.replaceFirstInput(prePhiNode, postPhiNode);
             }
         }
+        if (boundsExpressions.isEmpty() == false) {
+            mainMergeNode.setStateAfter(mainMergeState);
+        }
+
     }
 
     public static LoopExitNode getSingleExitFromLoop(LoopBeginNode curLoopBegin) {
@@ -350,6 +369,9 @@ public abstract class LoopTransformations {
         }
         // Find the last node after the exit blocks starts
         while (true) {
+            if (node == null) {
+                break;
+            }
             FixedNode next = node.next();
             if (next instanceof FixedWithNextNode) {
                 node = (FixedWithNextNode) next;
@@ -375,29 +397,30 @@ public abstract class LoopTransformations {
          * Manually lower the bounds expressions to IfNodes so that the branch side is connected to
          * the post loop and the fall side to either the next bounds check or to the main loop.
          */
+
         for (Node node : boundsExpressions) {
-            LogicNode condition = null;
-            GuardNode guard = null;
-            if (node instanceof ReadNode) {
-                ReadNode readNode = (ReadNode) node;
-                guard = (GuardNode) readNode.getGuard();
-                condition = guard.getCondition();
-            } else if (node instanceof WriteNode) {
-                WriteNode writeNode = (WriteNode) node;
-                guard = (GuardNode) writeNode.getGuard();
-                condition = guard.getCondition();
-            }
-
-            EndNode postLandingEnd = graph.add(new EndNode());
-            AbstractBeginNode postLandingNode = graph.add(new BeginNode());
-            postLandingNode.setNext(postLandingEnd);
-            mainMergeNode.addForwardEnd(postLandingEnd);
-
-            // Use a valid condition to construct main entry and bypass flow
-            if (condition != null) {
+            if (node instanceof FixedAccessNode) {
+                FixedAccessNode accessNode = (FixedAccessNode) node;
+                GuardNode guard = (GuardNode) accessNode.getGuard();
+                LogicNode condition = guard.getCondition();
+                // Use a valid condition to construct main entry and bypass flow
                 if (condition instanceof BinaryOpLogicNode) {
+                    EndNode postLandingEnd = graph.add(new EndNode());
+                    AbstractBeginNode postLandingNode = graph.add(new BeginNode());
+                    postLandingNode.setNext(postLandingEnd);
+                    mainMergeNode.addForwardEnd(postLandingEnd);
                     BinaryOpLogicNode logicNode = (BinaryOpLogicNode) condition;
                     ValueNode arrayLength = logicNode.getY();
+                    if (arrayLength instanceof ReadNode) {
+                        ReadNode readNode = (ReadNode) arrayLength;
+                        AddressNode addressNode = readNode.getAddress();
+                        ValueNode baseNode = addressNode.getBase();
+                        // We already check this address above pre loop.
+                        if (baseNode instanceof PiNode) {
+                            PiNode piNode = (PiNode) baseNode;
+                            piNode.setGuard(null);
+                        }
+                    }
                     // Compare the read length and the calculated limit expression.
                     LogicNode ifTest = (LogicNode) graph.addWithoutUnique(new IntegerBelowNode(origLimit, arrayLength));
                     if (arrayLengthTrip) {
@@ -413,7 +436,6 @@ public abstract class LoopTransformations {
                         trueSuccessor = mainBeginNode;
                         falseSuccessor = postLandingNode;
                     }
-
                     // Fixup lastIf before minting another one so there is no reuse.
                     if (lastIf != null) {
                         mainBypassChecks = graph.add(new BeginNode());
@@ -424,6 +446,7 @@ public abstract class LoopTransformations {
                         }
                     }
                     IfNode ifNode = graph.add(new IfNode(ifTest, trueSuccessor, falseSuccessor, trueSuccessor == mainBeginNode ? 1 : 0));
+                    ifNode.setNotSimplifiable();
                     if (lastIf != null) {
                         mainBypassChecks.setNext(ifNode);
                     } else {
@@ -440,7 +463,7 @@ public abstract class LoopTransformations {
     public static boolean pruneBoundsExpressions(IfNode preLimit, InductionVariable preIv, List<Node> boundsExpressions) {
         boolean arrayLengthTrip = false;
         if (boundsExpressions.isEmpty() == false) {
-            List<Node> workList = null;
+            List<Node> workList = new ArrayList<>();
             StructuredGraph graph = preLimit.graph();
             LogicNode ifTest = preLimit.condition();
             CompareNode compareNode = (CompareNode) ifTest;
@@ -453,43 +476,28 @@ public abstract class LoopTransformations {
             }
             if (checkValue instanceof ReadNode) {
                 ReadNode checkRead = (ReadNode) checkValue;
-                OffsetAddressNode offsetAddress = (OffsetAddressNode) checkRead.getAddress();
+                AddressNode offsetAddress = checkRead.getAddress();
                 for (Node node : boundsExpressions) {
-                    LogicNode condition = null;
-                    GuardNode guard = null;
-                    if (node instanceof ReadNode) {
-                        ReadNode readNode = (ReadNode) node;
-                        guard = (GuardNode) readNode.getGuard();
-                        condition = guard.getCondition();
-                    } else if (node instanceof WriteNode) {
-                        WriteNode writeNode = (WriteNode) node;
-                        guard = (GuardNode) writeNode.getGuard();
-                        condition = guard.getCondition();
-                    }
-                    if (condition != null) {
+                    if (node instanceof FixedAccessNode) {
+                        FixedAccessNode accessNode = (FixedAccessNode) node;
+                        GuardNode guard = (GuardNode) accessNode.getGuard();
+                        LogicNode condition = guard.getCondition();
                         if (condition instanceof BinaryOpLogicNode) {
                             BinaryOpLogicNode logicNode = (BinaryOpLogicNode) condition;
                             ValueNode arrayLength = logicNode.getY();
                             if (arrayLength instanceof ReadNode) {
                                 ReadNode readLength = (ReadNode) arrayLength;
-                                OffsetAddressNode curOffsetAddress = (OffsetAddressNode) readLength.getAddress();
-                                if (curOffsetAddress.getBase() == offsetAddress.getBase()) {
-                                    if (curOffsetAddress.getOffset() == offsetAddress.getOffset()) {
-                                        if (workList == null) {
-                                            workList = new ArrayList<>();
-                                        }
-                                        workList.add(node);
-                                        arrayLengthTrip = true;
-                                    }
+                                AddressNode curOffsetAddress = readLength.getAddress();
+                                if (curOffsetAddress == offsetAddress) {
+                                    workList.add(node);
+                                    arrayLengthTrip = true;
                                 }
                             }
                         }
                     }
                 }
-                if (workList != null) {
-                    for (Node node : workList) {
-                        boundsExpressions.remove(node);
-                    }
+                for (Node node : workList) {
+                    boundsExpressions.remove(node);
                 }
             }
         }
@@ -508,7 +516,11 @@ public abstract class LoopTransformations {
             upperBound = compareNode.getX();
         }
         ValueNode initIv = preCounted.getStart();
-        return graph.unique(new ConditionalNode(graph.unique(new IntegerLessThanNode(initIv, upperBound)), upperBound, initIv));
+        if (upperBound != null) {
+            return graph.unique(new ConditionalNode(graph.unique(new IntegerLessThanNode(initIv, upperBound)), upperBound, initIv));
+        } else {
+            return null;
+        }
     }
 
     public static void updatePreLoopLimit(IfNode preLimit, InductionVariable preIv, CountedLoopInfo preCounted) {
@@ -519,7 +531,6 @@ public abstract class LoopTransformations {
         ValueNode varX = null;
         ValueNode varY = null;
         ValueNode prePhi = preIv.valueNode();
-
         // Check direction and make new limit one iteration
         ValueNode initIv = preCounted.getStart();
         ValueNode newLimit = null;
@@ -528,7 +539,6 @@ public abstract class LoopTransformations {
         } else {
             newLimit = sub(graph, initIv, preIv.strideNode());
         }
-
         // Fetch the variable we are not replacing and configure the one we are
         if (compareNode.getX() == prePhi) {
             varX = prePhi;
@@ -537,7 +547,6 @@ public abstract class LoopTransformations {
             varY = prePhi;
             varX = newLimit;
         }
-
         // Re-wire the new condition into preLimit
         if (ifTest instanceof IntegerLessThanNode) {
             LogicNode newIfTest = graph.addWithoutUnique(new IntegerLessThanNode(varX, varY));
@@ -551,44 +560,46 @@ public abstract class LoopTransformations {
     }
 
     public static void removeChecks(LoopFragmentWhole origLoop, LoopFragmentWhole targetLoop) {
+        LoopBeginNode origLoopBegin = origLoop.loop().loopBegin();
+        LoopBeginNode targetLoopBegin = targetLoop.getDuplicatedNode(origLoopBegin);
+        List<Node> workList = new ArrayList<>();
         StructuredGraph graph = origLoop.graph();
-        NodeIterable<AbstractBeginNode> blocks = LoopFragment.toHirBlocks(origLoop.loop().loop().getBlocks());
-        for (AbstractBeginNode origNode : blocks) {
-            AbstractBeginNode blockNode = targetLoop.getDuplicatedNode(origNode);
-            if (blockNode instanceof LoopExitNode) {
-                continue;
-            } else if (blockNode instanceof LoopBeginNode) {
-                continue;
-            } else if (blockNode instanceof AbstractBeginNode) {
-                for (Node node : blockNode.getBlockNodes()) {
-                    GuardNode newGuard = null;
-                    if (node instanceof ReadNode) {
-                        ReadNode readNode = (ReadNode) node;
-                        GuardNode guard = (GuardNode) readNode.getGuard();
-                        if (guard == null) {
-                            continue;
+        for (Node preNode : origLoop.loop().inside().nodes()) {
+            Node node = targetLoop.getDuplicatedNode(preNode);
+            if (node instanceof FixedAccessNode) {
+                FixedAccessNode accessNode = (FixedAccessNode) node;
+                Node guardNode = (Node) accessNode.getGuard();
+                if (guardNode instanceof GuardNode) {
+                    GuardNode guard = (GuardNode) guardNode;
+                    if (guard.getReason() == BoundsCheckException) {
+                        accessNode.replaceFirstInput(guard, targetLoopBegin);
+                        if (workList.contains(guard) == false) {
+                            workList.add(guard);
                         }
-                        if (guard.getReason() == BoundsCheckException) {
-                            newGuard = guard;
-                        } else if (guard.getReason() == NullCheckException) {
-                            newGuard = graph.addWithoutUnique(new GuardNode(guard.getCondition(), blockNode, guard.getReason(), guard.getAction(), guard.isNegated(), guard.getSpeculation()));
-                            readNode.setGuard((GuardingNode) newGuard);
-                        }
-                    } else if (node instanceof WriteNode) {
-                        WriteNode writeNode = (WriteNode) node;
-                        GuardNode guard = (GuardNode) writeNode.getGuard();
-                        if (guard == null) {
-                            continue;
-                        }
-                        if (guard.getReason() == BoundsCheckException) {
-                            newGuard = guard;
-                        }
-                    }
-                    if (newGuard != null) {
-                        newGuard.clearReason();
-                        newGuard.clearAction();
                     }
                 }
+            } else if (node instanceof PiNode) {
+                PiNode piNode = (PiNode) node;
+                Node guardNode = (Node) piNode.getGuard();
+                if (guardNode instanceof GuardNode) {
+                    GuardNode guard = (GuardNode) guardNode;
+                    if (guard.getReason() == BoundsCheckException) {
+                        piNode.replaceFirstInput(guard, targetLoopBegin);
+                    }
+                }
+            }
+        }
+        for (Node preNode : origLoop.loop().whole().nodes()) {
+            Node node = targetLoop.getDuplicatedNode(preNode);
+        }
+        for (Node node : workList) {
+            GuardNode guard = (GuardNode) node;
+            LogicNode condition = guard.getCondition();
+            if (guard.hasNoUsages()) {
+                guard.safeDelete();
+            }
+            if (condition.hasNoUsages()) {
+                condition.safeDelete();
             }
         }
     }
@@ -596,35 +607,20 @@ public abstract class LoopTransformations {
     public static List<Node> findBoundsExpressions(LoopEx loop) {
         List<Node> boundsExpressions = new ArrayList<>();
         for (Node node : loop.inside().nodes()) {
-            boolean foundCandidate = false;
-            if (node instanceof ReadNode) {
-                ReadNode readNode = (ReadNode) node;
-                if (readNode.getGuard() != null) {
-                    GuardingNode guarding = readNode.getGuard();
+            if (node instanceof FixedAccessNode) {
+                FixedAccessNode accessNode = (FixedAccessNode) node;
+                if (accessNode.getGuard() != null) {
+                    GuardingNode guarding = accessNode.getGuard();
                     if (guarding instanceof GuardNode) {
                         GuardNode guard = (GuardNode) guarding;
                         if (guard.getReason() == BoundsCheckException) {
-                            foundCandidate = true;
+                            if (boundsExpressions.isEmpty()) {
+                                boundsExpressions.add(node);
+                            } else if (isUniqueAddress(node, boundsExpressions) == true) {
+                                boundsExpressions.add(node);
+                            }
                         }
                     }
-                }
-            } else if (node instanceof WriteNode) {
-                WriteNode writeNode = (WriteNode) node;
-                if (writeNode.getGuard() != null) {
-                    GuardingNode guarding = writeNode.getGuard();
-                    if (guarding instanceof GuardNode) {
-                        GuardNode guard = (GuardNode) guarding;
-                        if (guard.getReason() == BoundsCheckException) {
-                            foundCandidate = true;
-                        }
-                    }
-                }
-            }
-            if (foundCandidate) {
-                if (boundsExpressions.isEmpty()) {
-                    boundsExpressions.add(node);
-                } else if (isUniqueAddress(node, boundsExpressions) == true) {
-                    boundsExpressions.add(node);
                 }
             }
         }
@@ -633,41 +629,20 @@ public abstract class LoopTransformations {
 
     public static boolean isUniqueAddress(Node inNode, List<Node> boundsExpressions) {
         boolean isUniqueAddress = true;
-        boolean checkRead = true;
-        OffsetAddressNode offsetAddress = null;
-        if (inNode instanceof ReadNode) {
-            ReadNode readNode = (ReadNode) inNode;
-            offsetAddress = (OffsetAddressNode) readNode.getAddress();
-        } else if (inNode instanceof WriteNode) {
-            WriteNode writeNode = (WriteNode) inNode;
-            offsetAddress = (OffsetAddressNode) writeNode.getAddress();
-            checkRead = false;
-        }
-        if (offsetAddress != null) {
-            for (Node node : boundsExpressions) {
-                if (node instanceof ReadNode) {
-                    // Always compare same type
-                    if (checkRead == false) {
-                        continue;
-                    }
-                    ReadNode validNode = (ReadNode) node;
-                    OffsetAddressNode validOffsetAddress = (OffsetAddressNode) validNode.getAddress();
-                    // If two reads have the same base address, they have the same bounds.
-                    if (validOffsetAddress.getBase() == offsetAddress.getBase()) {
-                        isUniqueAddress = false;
-                        break;
-                    }
-                } else if (node instanceof WriteNode) {
-                    // Always compare same type
-                    if (checkRead) {
-                        continue;
-                    }
-                    WriteNode validNode = (WriteNode) node;
-                    OffsetAddressNode validOffsetAddress = (OffsetAddressNode) validNode.getAddress();
-                    // If two writes have the same base address, they have the same bounds.
-                    if (validOffsetAddress.getBase() == offsetAddress.getBase()) {
-                        isUniqueAddress = false;
-                        break;
+        AddressNode offsetAddress = null;
+        if (inNode instanceof FixedAccessNode) {
+            FixedAccessNode accessInNode = (FixedAccessNode) inNode;
+            offsetAddress = accessInNode.getAddress();
+            if (offsetAddress != null) {
+                for (Node node : boundsExpressions) {
+                    if (node instanceof FixedAccessNode) {
+                        FixedAccessNode validNode = (FixedAccessNode) node;
+                        AddressNode validAddress = validNode.getAddress();
+                        // If two addresses have the same base address, they have the same bounds.
+                        if (validAddress.getBase() == offsetAddress.getBase()) {
+                            isUniqueAddress = false;
+                            break;
+                        }
                     }
                 }
             }
@@ -710,7 +685,7 @@ public abstract class LoopTransformations {
 
     public static boolean isQualifyingLoop(LoopEx loop) {
         LoopBeginNode curBeginNode = loop.loopBegin();
-        boolean isCanonical = (curBeginNode.loopFrequency() > 1.0 && loop.canDuplicateLoop());
+        boolean isCanonical = (curBeginNode.loopFrequency() > 2.0 && loop.canDuplicateLoop());
         Loop<Block> curLoop = loop.loop();
         for (Loop<Block> child : curLoop.getChildren()) {
             isCanonical = false;
@@ -719,62 +694,75 @@ public abstract class LoopTransformations {
         if (isCanonical) {
             isCanonical = false;
             ValueNode outerLoopPhi = limitTestContainsOuterPhi(loop);
-            LoopFragmentWhole origLoop = loop.whole();
-            NodeIterable<AbstractBeginNode> blocks = LoopFragment.toHirBlocks(origLoop.loop().loop().getBlocks());
-            // TODO - need a cost metric when flow present and need to extend design some
-            if (blocks.count() < 20) {
-                CountedLoopInfo counted = loop.counted();
-                InductionVariable iv = counted.getCounter();
-                // Does the original loop have constant stride
-                if (iv.isConstantStride()) {
-                    ValueNode loopPhi = iv.valueNode();
-                    boolean splittingOk = true;
-                    // If we have a zero trip loop scenario, we will need to avoid splitting for now.
-                    if (outerLoopPhi != null) {
-                        ValueNode initIv = counted.getStart();
-                        if (initIv instanceof ConstantNode) {
-                            ValuePhiNode cmpIv = (ValuePhiNode) outerLoopPhi;
-                            ValueNode cmpInit = cmpIv.valueAt(0);
-                            if (initIv == cmpInit) {
-                                splittingOk = false;
-                            }
+            CountedLoopInfo counted = loop.counted();
+            InductionVariable iv = counted.getCounter();
+            // Does the original loop have constant stride
+            if (iv.isConstantStride()) {
+                ValueNode loopPhi = iv.valueNode();
+                boolean splittingOk = true;
+                // If we have a zero trip loop, we will need to avoid splitting for now.
+                if (outerLoopPhi != null) {
+                    ValueNode initIv = counted.getStart();
+                    if (initIv instanceof ConstantNode) {
+                        ValuePhiNode cmpIv = (ValuePhiNode) outerLoopPhi;
+                        ValueNode cmpInit = cmpIv.valueAt(0);
+                        if (initIv == cmpInit) {
+                            splittingOk = false;
                         }
                     }
-                    // Does this loop have a single exit?
-                    if (curBeginNode.loopExits().count() == 1 && splittingOk) {
-                        EndNode endNode = getSingleEndFromLoop(curBeginNode);
-                        // Loops connected simply for now
-                        if (endNode != null) {
-                            // Look for other kinds of excepting guards, calls or side effects
-                            if (curBeginNode.isSingleEntryLoop()) {
-                                int boundsCount = 0;
-                                for (Node node : loop.inside().nodes()) {
-                                    if (node instanceof GuardNode) {
-                                        GuardNode guard = (GuardNode) node;
-                                        if ((guard.getReason() != BoundsCheckException) && (guard.getReason() != NullCheckException)) {
-                                            boundsCount = 0;
-                                            break;
-                                        } else if (guard.getReason() == BoundsCheckException) {
-                                            if (canEliminateBounds(loopPhi, guard) == false) {
-                                                boundsCount = 0;
-                                                break;
-                                            }
-                                            boundsCount++;
-                                        }
-                                    } else if (node instanceof CommitAllocationNode) {
-                                        CommitAllocationNode curNode = (CommitAllocationNode) node;
-                                        if (curNode.hasLocks()) {
-                                            boundsCount = 0;
-                                            break;
-                                        }
-                                    } else if (node instanceof InvokeNode) {
+                }
+                // Does this loop have a single exit/single exit?
+                if (curBeginNode.loopExits().count() == 1 && curBeginNode.isSingleEntryLoop()) {
+                    EndNode endNode = getSingleEndFromLoop(curBeginNode);
+                    if (endNode == null) {
+                        splittingOk = false;
+                    } else {
+                        AbstractMergeNode mergeNode = endNode.merge();
+                        int endCount = mergeNode.forwardEndCount();
+                        int loopEndCount = 1;
+                        for (int i = 1; i < mergeNode.forwardEndCount(); i++) {
+                            EndNode curEnd = mergeNode.forwardEndAt(i);
+                            if (curEnd.predecessor() instanceof LoopExitNode) {
+                                loopEndCount++;
+                            }
+                        }
+                        // This loop is tied to complex control flow
+                        if (loopEndCount > 1) {
+                            splittingOk = false;
+                        } else if (mergeNode.forwardEndCount() > 2) {
+                            splittingOk = false;
+                        }
+                    }
+                    if (splittingOk) {
+                        // Look for other kinds of excepting guards, calls or side effects
+                        int boundsCount = 0;
+                        for (Node node : loop.inside().nodes()) {
+                            if (node instanceof GuardNode) {
+                                GuardNode guard = (GuardNode) node;
+                                if ((guard.getReason() != BoundsCheckException) && (guard.getReason() != NullCheckException)) {
+                                    boundsCount = 0;
+                                    break;
+                                } else if (guard.getReason() == BoundsCheckException) {
+                                    if (canEliminateBounds(loopPhi, guard) == false) {
                                         boundsCount = 0;
                                         break;
                                     }
+                                    boundsCount++;
                                 }
-                                if (boundsCount > 0) {
-                                    isCanonical = true;
+                            } else if (node instanceof CommitAllocationNode) {
+                                CommitAllocationNode curNode = (CommitAllocationNode) node;
+                                if (curNode.hasLocks()) {
+                                    boundsCount = 0;
+                                    break;
                                 }
+                            } else if (node instanceof InvokeNode) {
+                                boundsCount = 0;
+                                break;
+                            }
+                        }
+                        if (boundsCount > 0) {
+                            if (loopHasPhiFrameState(curBeginNode)) {
+                                isCanonical = true;
                             }
                         }
                     }
@@ -782,6 +770,23 @@ public abstract class LoopTransformations {
             }
         }
         return isCanonical;
+    }
+
+    public static boolean loopHasPhiFrameState(LoopBeginNode curBeginNode) {
+        boolean foundPhi = false;
+        FrameState curState = curBeginNode.stateAfter();
+        for (PhiNode phiNode : curBeginNode.valuePhis()) {
+            for (int i = 0; i < curState.values().count(); i++) {
+                if (curState.values().get(i) == phiNode) {
+                    foundPhi = true;
+                    break;
+                }
+            }
+            if (foundPhi) {
+                break;
+            }
+        }
+        return foundPhi;
     }
 
     public static ValueNode limitTestContainsOuterPhi(LoopEx loop) {
@@ -795,12 +800,16 @@ public abstract class LoopTransformations {
         InductionVariable iv = counted.getCounter();
         ValueNode phi = iv.valueNode();
         if (varX instanceof ValuePhiNode && varX != phi) {
-            if (isParentLoopPhiVar(varX, phi)) {
-                parentPhi = varX;
+            if (phi instanceof ValuePhiNode) {
+                if (isParentLoopPhiVar(varX, phi)) {
+                    parentPhi = varX;
+                }
             }
         } else if (varY instanceof ValuePhiNode && varY != phi) {
-            if (isParentLoopPhiVar(varY, phi)) {
-               parentPhi = varY;
+            if (phi instanceof ValuePhiNode) {
+                if (isParentLoopPhiVar(varY, phi)) {
+                    parentPhi = varY;
+                }
             }
         }
         return parentPhi;

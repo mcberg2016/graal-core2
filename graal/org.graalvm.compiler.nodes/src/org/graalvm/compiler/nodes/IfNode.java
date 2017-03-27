@@ -79,6 +79,7 @@ public final class IfNode extends ControlSplitNode implements Simplifiable, LIRL
     @Successor AbstractBeginNode falseSuccessor;
     @Input(InputType.Condition) LogicNode condition;
     protected double trueSuccessorProbability;
+    protected boolean notSimplifiable;
 
     public LogicNode condition() {
         return condition;
@@ -99,6 +100,7 @@ public final class IfNode extends ControlSplitNode implements Simplifiable, LIRL
         this.falseSuccessor = falseSuccessor;
         this.trueSuccessor = trueSuccessor;
         setTrueSuccessorProbability(trueSuccessorProbability);
+        this.notSimplifiable = false;
     }
 
     /**
@@ -126,6 +128,13 @@ public final class IfNode extends ControlSplitNode implements Simplifiable, LIRL
     public void setTrueSuccessor(AbstractBeginNode node) {
         updatePredecessor(trueSuccessor, node);
         trueSuccessor = node;
+    }
+
+    public boolean isNotSimplifiable() {
+        return notSimplifiable;
+    }
+    public void setNotSimplifiable() {
+        notSimplifiable = true;
     }
 
     public void setFalseSuccessor(AbstractBeginNode node) {
@@ -177,6 +186,10 @@ public final class IfNode extends ControlSplitNode implements Simplifiable, LIRL
 
     @Override
     public void simplify(SimplifierTool tool) {
+        if (isNotSimplifiable()) {
+            return;
+        }
+
         if (trueSuccessor().next() instanceof DeoptimizeNode) {
             if (trueSuccessorProbability != 0) {
                 CORRECTED_PROBABILITIES.increment();
