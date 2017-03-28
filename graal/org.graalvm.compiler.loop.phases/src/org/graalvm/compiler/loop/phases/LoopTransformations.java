@@ -31,7 +31,6 @@ import java.util.Iterator;
 import java.util.List;
 
 import org.graalvm.compiler.graph.Graph.Mark;
-import org.graalvm.compiler.graph.iterators.NodeIterable;
 import org.graalvm.compiler.core.common.cfg.Loop;
 import org.graalvm.compiler.core.common.RetryableBailoutException;
 import org.graalvm.compiler.core.common.type.Stamp;
@@ -45,7 +44,6 @@ import org.graalvm.compiler.loop.InductionVariable.Direction;
 import static org.graalvm.compiler.loop.MathUtil.add;
 import static org.graalvm.compiler.loop.MathUtil.sub;
 import org.graalvm.compiler.loop.LoopEx;
-import org.graalvm.compiler.loop.LoopFragmentInside;
 import org.graalvm.compiler.loop.LoopFragmentWhole;
 import org.graalvm.compiler.loop.LoopFragment;
 import org.graalvm.compiler.nodeinfo.InputType;
@@ -170,6 +168,73 @@ public abstract class LoopTransformations {
 
         // TODO (gd) probabilities need some amount of fixup.. (probably also in other transforms)
     }
+
+    /*
+     * This function splits candidate loops into pre, main and post loops,
+     * dividing the iteration space to facilitate the majority of iterations
+     * being executed in a main loop, which will have RCE implemented upon it.
+     * The initial loop form is constrained to single entry/exit, but can have
+     * flow.  The translation looks like:
+     *
+     *       (Simple Loop entry)                   (Pre Loop Entry)
+     *                |                                  |
+     *         (LoopBeginNode)                    (LoopBeginNode)
+     *                |                                  |
+     *       (Loop Control Test)<------   ==>  (Loop control Test)<------
+     *         /               \       \         /               \       \
+     *    (Loop Exit)      (Loop Body) |    (Loop Exit)      (Loop Body) |
+     *        |                |       |        |                |       |
+     * (continue code)     (Loop End)  |  if (M < length)*   (Loop End)  |
+     *                         \       /       /      \           \      /
+     *                          ----->        /       |            ----->
+     *                                       /  if ( ... )*
+     *                                      /     /       \
+     *                                     /     /         \
+     *                                    /     /           \
+     *                                   |     /     (Main Loop Entry)
+     *                                   |    |             |
+     *                                   |    |      (LoopBeginNode)
+     *                                   |    |             |
+     *                                   |    |     (Loop Control Test)<------
+     *                                   |    |      /               \        \
+     *                                   |    |  (Loop Exit)      (Loop Body) |
+     *                                    \   \      |                |       |
+     *                                     \   \     |            (Loop End)  |
+     *                                      \   \    |                \       /
+     *                                       \   \   |                 ------>
+     *                                        \   \  |
+     *                                      (Main Loop Merge)*
+     *                                               |
+     *                                      (Post Loop Entry)
+     *                                               |
+     *                                        (LoopBeginNode)
+     *                                               |
+     *                                       (Loop Control Test)<-----
+     *                                        /               \       \
+     *                                    (Loop Exit)     (Loop Body) |
+     *                                        |               |       |
+     *                                 (continue code)    (Loop End)  |
+     *                                                         \      /
+     *                                                          ----->
+     *
+     * Key: "*" = optional.
+     *
+     * The value "M" is the maximal value of the loop trip for the original
+     * loop.  The value of "length" is applicable to the number of arrays found
+     * in the loop but is reduced if some or all of the arrays are known to be
+     * the same length as "M". The maximum number of tests can be equal to the
+     * number of arrays in the loop, where multiple instances of an array are
+     * subsumed into a single test for that arrays length.
+     *
+     * If the optional main loop entry tests are absent, the Pre Loop exit
+     * connects to the Main loops entry and there is no merge hanging off the
+     * main loops exit to converge flow from said tests.  All split use data
+     * flow is mitigated through phi(s) in the main merge if present and
+     * passed through the main and post loop phi(s) from the originating pre
+     * loop with final phi(s) and data flow patched to the "continue code".
+     * The pre loop is constrained to one iteration for now and will likely
+     * be updated to produce vector alignment if applicable.
+     */
 
     public static void insertPrePostLoops(LoopEx loop, PhaseContext context, CanonicalizerPhase canonicalizer, StructuredGraph graph) {
         LoopFragmentWhole preLoop = loop.whole();
@@ -588,9 +653,6 @@ public abstract class LoopTransformations {
                     }
                 }
             }
-        }
-        for (Node preNode : origLoop.loop().whole().nodes()) {
-            Node node = targetLoop.getDuplicatedNode(preNode);
         }
         for (Node node : workList) {
             GuardNode guard = (GuardNode) node;
