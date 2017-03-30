@@ -39,6 +39,7 @@ import org.graalvm.compiler.debug.DebugCloseable;
 import org.graalvm.compiler.debug.DebugCounter;
 import org.graalvm.compiler.debug.DebugTimer;
 import org.graalvm.compiler.debug.GraalError;
+import org.graalvm.compiler.debug.MethodFilter;
 import org.graalvm.compiler.debug.internal.method.MethodMetricsRootScopeInfo;
 import org.graalvm.compiler.lir.LIR;
 import org.graalvm.compiler.lir.alloc.OutOfRegistersException;
@@ -175,7 +176,39 @@ public class GraalCompiler {
             } catch (Throwable e) {
                 throw Debug.handle(e);
             }
+            checkForRequestedCrash(r.graph);
             return r.compilationResult;
+        }
+    }
+
+    /**
+     * Checks whether the {@link GraalCompilerOptions#CrashAt} option indicates that the compilation
+     * of {@code graph} should result in an exception.
+     *
+     * @param graph a graph currently being compiled
+     * @throws RuntimeException if the value of {@link GraalCompilerOptions#CrashAt} matches
+     *             {@code graph.method()} or {@code graph.name}
+     */
+    private static void checkForRequestedCrash(StructuredGraph graph) {
+        String methodPattern = GraalCompilerOptions.CrashAt.getValue(graph.getOptions());
+        if (methodPattern != null) {
+            String crashLabel = null;
+            ResolvedJavaMethod method = graph.method();
+            if (method == null) {
+                if (graph.name.contains(methodPattern)) {
+                    crashLabel = graph.name;
+                }
+            } else {
+                MethodFilter[] filters = MethodFilter.parse(methodPattern);
+                for (MethodFilter filter : filters) {
+                    if (filter.matches(method)) {
+                        crashLabel = method.format("%H.%n(%p)");
+                    }
+                }
+            }
+            if (crashLabel != null) {
+                throw new RuntimeException("Forced crash after compiling " + crashLabel);
+            }
         }
     }
 

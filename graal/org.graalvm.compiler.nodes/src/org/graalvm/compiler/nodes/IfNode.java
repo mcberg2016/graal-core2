@@ -613,7 +613,7 @@ public final class IfNode extends ControlSplitNode implements Simplifiable, LIRL
 
     protected void removeThroughFalseBranch(SimplifierTool tool) {
         AbstractBeginNode trueBegin = trueSuccessor();
-        graph().removeSplitPropagate(this, trueBegin, tool);
+        graph().removeSplitPropagate(this, trueBegin);
         tool.addToWorkList(trueBegin);
         if (condition() != null) {
             GraphUtil.tryKillUnused(condition());
@@ -785,9 +785,9 @@ public final class IfNode extends ControlSplitNode implements Simplifiable, LIRL
         transferProxies(trueSuccessor(), trueMerge);
         transferProxies(falseSuccessor(), falseMerge);
 
-        cleanupMerge(tool, merge);
-        cleanupMerge(tool, trueMerge);
-        cleanupMerge(tool, falseMerge);
+        cleanupMerge(merge);
+        cleanupMerge(trueMerge);
+        cleanupMerge(falseMerge);
 
         return true;
     }
@@ -882,10 +882,10 @@ public final class IfNode extends ControlSplitNode implements Simplifiable, LIRL
         }
     }
 
-    private void cleanupMerge(SimplifierTool tool, MergeNode merge) {
+    private void cleanupMerge(MergeNode merge) {
         if (merge != null && merge.isAlive()) {
             if (merge.forwardEndCount() == 0) {
-                GraphUtil.killCFG(merge, tool);
+                GraphUtil.killCFG(merge);
             } else if (merge.forwardEndCount() == 1) {
                 graph().reduceTrivialMerge(merge);
             }
@@ -1227,5 +1227,22 @@ public final class IfNode extends ControlSplitNode implements Simplifiable, LIRL
 
     public AbstractBeginNode getSuccessor(boolean result) {
         return result ? this.trueSuccessor() : this.falseSuccessor();
+    }
+
+    @Override
+    public boolean setProbability(AbstractBeginNode successor, double value) {
+        if (successor == this.trueSuccessor()) {
+            this.setTrueSuccessorProbability(value);
+            return true;
+        } else if (successor == this.falseSuccessor()) {
+            this.setTrueSuccessorProbability(1.0 - value);
+            return true;
+        }
+        return false;
+    }
+
+    @Override
+    public int getSuccessorCount() {
+        return 2;
     }
 }
