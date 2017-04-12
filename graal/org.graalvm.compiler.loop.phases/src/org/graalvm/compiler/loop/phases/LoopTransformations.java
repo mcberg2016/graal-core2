@@ -165,6 +165,7 @@ public abstract class LoopTransformations {
     }
 
     /*
+     * @formatter:off
      * This function splits candidate loops into pre, main and post loops,
      * dividing the iteration space to facilitate the majority of iterations
      * being executed in a main loop, which will have RCE implemented upon it.
@@ -229,6 +230,8 @@ public abstract class LoopTransformations {
      * loop with final phi(s) and data flow patched to the "continue code".
      * The pre loop is constrained to one iteration for now and will likely
      * be updated to produce vector alignment if applicable.
+     * 
+     * @formatter:on
      */
 
     public static void insertPrePostLoops(LoopEx loop, StructuredGraph graph) {
@@ -320,12 +323,9 @@ public abstract class LoopTransformations {
             postLoopExitNode.setNext(continuationNode);
 
             // Clear out any unused EndNodes
-            for (Node n : graph.getNodes()) {
-                if (n instanceof EndNode) {
-                    EndNode endNode = (EndNode) n;
-                    if (endNode.merge() == null) {
-                        endNode.safeDelete();
-                    }
+            for (EndNode endNode : graph.getNodes().filter(EndNode.class)) {
+                if (endNode.merge() == null) {
+                    endNode.safeDelete();
                 }
             }
 
@@ -338,14 +338,12 @@ public abstract class LoopTransformations {
     public static void cleanPostLoopExit(LoopExitNode postLoopExitNode) {
         List<Node> workList = new ArrayList<>();
         // Clean up the postLoopExitNode before we move usages from the pre loops exit
-        for (Node usage : postLoopExitNode.usages()) {
+        for (Node usage : postLoopExitNode.usages().filter(GuardNode.class)) {
             workList.add(usage);
         }
         for (Node node : workList) {
-            if (node instanceof GuardNode) {
-                if (node.usages().isEmpty()) {
-                    node.safeDelete();
-                }
+            if (node.usages().isEmpty()) {
+                node.safeDelete();
             }
         }
     }
@@ -734,8 +732,9 @@ public abstract class LoopTransformations {
     public static boolean isQualifyingLoop(LoopEx loop) {
         LoopBeginNode curBeginNode = loop.loopBegin();
         boolean isCanonical = (curBeginNode.loopFrequency() > 2.0 && loop.canDuplicateLoop());
-        Loop<Block> curLoop = loop.loop();
-        isCanonical = curLoop.getChildren().isEmpty();
+        if (isCanonical) {
+            isCanonical = loop.loop().getChildren().isEmpty();
+        }
         if (isCanonical) {
             isCanonical = false;
             ValueNode outerLoopPhi = limitTestContainsOuterPhi(loop);

@@ -52,7 +52,7 @@ public class LoopInsertPrePostLoopsPhase extends LoopPhase<LoopPolicies> {
                     Debug.log("InsertPrePostLoops %s", loop);
                     LoopTransformations.insertPrePostLoops(loop, graph);
                     INSERT_PRE_POST_LOOPS.increment();
-                    Debug.dump(Debug.INFO_LOG_LEVEL, graph, "InsertPrePostLoops %s", loop);
+                    Debug.dump(Debug.DETAILED_LEVEL, graph, "InsertPrePostLoops %s", loop);
                 }
             }
             dataCounted.deleteUnusedNodes();
