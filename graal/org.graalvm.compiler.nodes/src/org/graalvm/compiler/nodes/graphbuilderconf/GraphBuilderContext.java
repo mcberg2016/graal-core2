@@ -107,7 +107,7 @@ public interface GraphBuilderContext extends GraphBuilderTool {
             assert !(value instanceof StateSplit) || ((StateSplit) value).stateAfter() != null;
             return value;
         }
-        T equivalentValue = recursiveAppend(value);
+        T equivalentValue = append(value);
         if (equivalentValue instanceof StateSplit) {
             StateSplit stateSplit = (StateSplit) equivalentValue;
             if (stateSplit.stateAfter() == null && stateSplit.hasSideEffect()) {
@@ -125,7 +125,7 @@ public interface GraphBuilderContext extends GraphBuilderTool {
             LogicNode isNull = add(IsNullNode.create(value));
             FixedGuardNode fixedGuard = add(new FixedGuardNode(isNull, DeoptimizationReason.NullCheckException, DeoptimizationAction.None, true));
             Stamp newStamp = valueStamp.improveWith(StampFactory.objectNonNull());
-            return add(new PiNode(value, newStamp, fixedGuard));
+            return add(PiNode.create(value, newStamp, fixedGuard));
         }
     }
 
@@ -270,12 +270,12 @@ public interface GraphBuilderContext extends GraphBuilderTool {
      * non-null} stamp.
      */
     default ValueNode nullCheckedValue(ValueNode value, DeoptimizationAction action) {
-        if (!StampTool.isPointerNonNull(value.stamp())) {
+        if (!StampTool.isPointerNonNull(value)) {
             LogicNode condition = getGraph().unique(IsNullNode.create(value));
             ObjectStamp receiverStamp = (ObjectStamp) value.stamp();
             Stamp stamp = receiverStamp.join(objectNonNull());
             FixedGuardNode fixedGuard = append(new FixedGuardNode(condition, NullCheckException, action, true));
-            PiNode nonNullReceiver = getGraph().unique(new PiNode(value, stamp, fixedGuard));
+            ValueNode nonNullReceiver = getGraph().addOrUnique(PiNode.create(value, stamp, fixedGuard));
             // TODO: Propogating the non-null into the frame state would
             // remove subsequent null-checks on the same value. However,
             // it currently causes an assertion failure when merging states.

@@ -37,7 +37,6 @@ import java.util.Map;
 import org.graalvm.compiler.api.replacements.SnippetReflectionProvider;
 import org.graalvm.compiler.code.CompilationResult;
 import org.graalvm.compiler.core.common.CompilationIdentifier;
-import org.graalvm.compiler.core.common.spi.ConstantFieldProvider;
 import org.graalvm.compiler.core.common.util.CompilationAlarm;
 import org.graalvm.compiler.core.target.Backend;
 import org.graalvm.compiler.debug.Debug;
@@ -66,6 +65,7 @@ import com.oracle.truffle.api.nodes.UnexpectedResultException;
 import jdk.vm.ci.code.CompilationRequest;
 import jdk.vm.ci.code.InstalledCode;
 import jdk.vm.ci.meta.MetaAccessProvider;
+import jdk.vm.ci.meta.ResolvedJavaMethod;
 import jdk.vm.ci.meta.ResolvedJavaType;
 import jdk.vm.ci.meta.SpeculationLog;
 
@@ -103,9 +103,7 @@ public abstract class TruffleCompiler {
         this.compilationNotify = graalTruffleRuntime.getCompilationNotify();
         this.backend = backend;
         this.snippetReflection = snippetReflection;
-        Providers backendProviders = backend.getProviders();
-        ConstantFieldProvider constantFieldProvider = new TruffleConstantFieldProvider(backendProviders.getConstantFieldProvider(), backendProviders.getMetaAccess());
-        this.providers = backendProviders.copyWith(constantFieldProvider);
+        this.providers = backend.getProviders();
         this.suites = suites;
         this.lirSuites = lirSuites;
 
@@ -159,11 +157,12 @@ public abstract class TruffleCompiler {
         compilationNotify.notifyCompilationStarted(compilable, compilationMap);
 
         try (CompilationAlarm alarm = CompilationAlarm.trackCompilationPeriod(TruffleCompilerOptions.getOptions())) {
+            ResolvedJavaMethod rootMethod = partialEvaluator.rootForCallTarget(compilable);
             TruffleInlining inliningDecision = new TruffleInlining(compilable, new DefaultInliningPolicy());
-            CompilationIdentifier compilationId = runtime.getCompilationIdentifier(compilable, partialEvaluator.getCompilationRootMethods()[0], backend);
+            CompilationIdentifier compilationId = runtime.getCompilationIdentifier(compilable, rootMethod, backend);
             PhaseSuite<HighTierContext> graphBuilderSuite = createGraphBuilderSuite();
             try (DebugCloseable a = PartialEvaluationTime.start(); DebugCloseable c = PartialEvaluationMemUse.start()) {
-                graph = partialEvaluator.createGraph(compilable, inliningDecision, AllowAssumptions.YES, compilationId, task);
+                graph = partialEvaluator.createGraph(compilable, inliningDecision, rootMethod, AllowAssumptions.YES, compilationId, task);
             }
 
             // check if the task was cancelled in the time frame between [after PE: before
@@ -204,7 +203,7 @@ public abstract class TruffleCompiler {
     public CompilationResult compileMethodHelper(StructuredGraph graph, String name, PhaseSuite<HighTierContext> graphBuilderSuite, InstalledCode predefinedInstalledCode,
                     CompilationRequest compilationRequest, Map<OptimizedCallTarget, Object> compilationMap) {
         try (Scope s = Debug.scope("TruffleFinal")) {
-            Debug.dump(Debug.BASIC_LOG_LEVEL, graph, "After TruffleTier");
+            Debug.dump(Debug.BASIC_LEVEL, graph, "After TruffleTier");
         } catch (Throwable e) {
             throw Debug.handle(e);
         }

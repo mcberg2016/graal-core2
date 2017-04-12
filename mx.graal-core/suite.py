@@ -1,5 +1,5 @@
 suite = {
-  "mxversion" : "5.81.0",
+  "mxversion" : "5.86.0",
   "name" : "graal-core",
 
   "imports" : {
@@ -8,7 +8,7 @@ suite = {
         "name" : "truffle",
         # IMPORTANT: When updating the Truffle import, notify Truffle language developers
         # (by mail to graal-dev@openjdk.java.net) of the pending change.
-        "version" : "ca92fe9778c9dfefef63ae4ebe01c6ccb78adc18",
+        "version" : "1fe210a62d53764d84c784cca3d35ba69a5cf49f",
         "urls" : [
           {"url" : "https://github.com/graalvm/truffle.git", "kind" : "git"},
           {"url" : "https://curio.ssw.jku.at/nexus/content/repositories/snapshots", "kind" : "binary"},
@@ -844,10 +844,11 @@ suite = {
     "org.graalvm.compiler.virtual.bench" : {
       "subDir" : "graal",
       "sourceDirs" : ["src"],
-      "dependencies" : ["mx:JMH", "org.graalvm.compiler.microbenchmarks"],
+      "dependencies" : ["mx:JMH_1_18", "org.graalvm.compiler.microbenchmarks"],
       "checkstyle" : "org.graalvm.compiler.graph",
       "javaCompliance" : "1.8",
-      "annotationProcessors" : ["mx:JMH"],
+      "annotationProcessors" : ["mx:JMH_1_18"],
+      "findbugsIgnoresGenerated" : True,
       "workingSets" : "Graal,Bench",
     },
 
@@ -855,7 +856,7 @@ suite = {
       "subDir" : "graal",
       "sourceDirs" : ["src"],
       "dependencies" : [
-        "mx:JMH",
+        "mx:JMH_1_18",
         "org.graalvm.compiler.api.test",
         "org.graalvm.compiler.java",
         "org.graalvm.compiler.runtime",
@@ -863,7 +864,8 @@ suite = {
       "checkstyle" : "org.graalvm.compiler.graph",
       "javaCompliance" : "1.8",
       "checkPackagePrefix" : "false",
-      "annotationProcessors" : ["mx:JMH"],
+      "annotationProcessors" : ["mx:JMH_1_18"],
+      "findbugsIgnoresGenerated" : True,
       "workingSets" : "Graal,Bench",
     },
 
@@ -1149,14 +1151,15 @@ suite = {
       "subDir" : "graal",
       "sourceDirs" : ["src"],
       "dependencies" : [
-        "mx:JMH",
+        "mx:JMH_1_18",
         "truffle:TRUFFLE_API",
       ],
       "checkstyle" : "org.graalvm.compiler.graph",
       "javaCompliance" : "1.8",
       "annotationProcessors" : [
-        "mx:JMH",
+        "mx:JMH_1_18",
       ],
+      "findbugsIgnoresGenerated" : True,
       "workingSets" : "Graal,Truffle,Bench",
     },
 

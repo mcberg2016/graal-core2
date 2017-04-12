@@ -79,7 +79,9 @@ public class GraalDebugConfig implements DebugConfig {
         @Option(help = "Write debug values into a file instead of the terminal. " +
                        "If DebugValueSummary is Thread, the thread name will be prepended.", type = OptionType.Debug)
         public static final OptionKey<String> DebugValueFile = new OptionKey<>(null);
-        @Option(help = "Send Graal compiler IR to dump handlers on error", type = OptionType.Debug)
+        @Option(help = "Enable debug output for stub code generation and snippet preparation.", type = OptionType.Debug)
+        public static final OptionKey<Boolean> DebugStubsAndSnippets = new OptionKey<>(false);
+        @Option(help = "Send Graal compiler IR to dump handlers on error.", type = OptionType.Debug)
         public static final OptionKey<Boolean> DumpOnError = new OptionKey<>(false);
         @Option(help = "Intercept also bailout exceptions", type = OptionType.Debug)
         public static final OptionKey<Boolean> InterceptBailout = new OptionKey<>(false);
@@ -115,6 +117,7 @@ public class GraalDebugConfig implements DebugConfig {
         public static final OptionKey<Integer> PrintBinaryGraphPort = new OptionKey<>(4445);
         @Option(help = "Schedule graphs as they are dumped.", type = OptionType.Debug)
         public static final OptionKey<Boolean> PrintGraphWithSchedule = new OptionKey<>(false);
+
         @Option(help = "Enable dumping Truffle ASTs to the IdealGraphVisualizer.", type = OptionType.Debug)
         public static final OptionKey<Boolean> PrintTruffleTrees = new OptionKey<>(true);
 
@@ -406,7 +409,7 @@ public class GraalDebugConfig implements DebugConfig {
         if (e instanceof BailoutException && !Options.InterceptBailout.getValue(options)) {
             return null;
         }
-        Debug.setConfig(Debug.fixedConfig(options, Debug.BASIC_LOG_LEVEL, Debug.BASIC_LOG_LEVEL, false, false, false, false, false, dumpHandlers, verifyHandlers, output));
+        Debug.setConfig(Debug.fixedConfig(options, Debug.BASIC_LEVEL, Debug.BASIC_LEVEL, false, false, false, false, false, dumpHandlers, verifyHandlers, output));
         Debug.log("Exception occurred in scope: %s", Debug.currentScope());
         Map<Object, Object> firstSeen = new IdentityHashMap<>();
         for (Object o : Debug.context()) {
@@ -414,7 +417,7 @@ public class GraalDebugConfig implements DebugConfig {
             if (!firstSeen.containsKey(o)) {
                 firstSeen.put(o, o);
                 if (Options.DumpOnError.getValue(options) || Options.Dump.getValue(options) != null) {
-                    Debug.dump(Debug.BASIC_LOG_LEVEL, o, "Exception: %s", e);
+                    Debug.dump(Debug.BASIC_LEVEL, o, "Exception: %s", e);
                 } else {
                     Debug.log("Context obj %s", o);
                 }

@@ -22,6 +22,9 @@
  */
 package org.graalvm.compiler.graph;
 
+import static org.graalvm.compiler.nodeinfo.NodeCycles.CYCLES_IGNORED;
+import static org.graalvm.compiler.nodeinfo.NodeSize.SIZE_IGNORED;
+
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Iterator;
@@ -405,6 +408,13 @@ public class Graph {
         return add(node);
     }
 
+    public <T extends Node> T maybeAddOrUnique(T node) {
+        if (node.isAlive()) {
+            return node;
+        }
+        return addOrUnique(node);
+    }
+
     public <T extends Node> T addOrUniqueWithInputs(T node) {
         if (node.isAlive()) {
             assert node.graph() == this;
@@ -786,7 +796,7 @@ public class Graph {
     }
 
     // Fully qualified annotation name is required to satisfy javac
-    @org.graalvm.compiler.nodeinfo.NodeInfo
+    @org.graalvm.compiler.nodeinfo.NodeInfo(cycles = CYCLES_IGNORED, size = SIZE_IGNORED)
     static final class PlaceHolderNode extends Node {
 
         public static final NodeClass<PlaceHolderNode> TYPE = NodeClass.create(PlaceHolderNode.class);

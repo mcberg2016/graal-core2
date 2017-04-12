@@ -22,17 +22,21 @@
  */
 package org.graalvm.compiler.nodes.calc;
 
+import jdk.vm.ci.meta.ConstantReflectionProvider;
+import jdk.vm.ci.meta.MetaAccessProvider;
 import org.graalvm.compiler.core.common.NumUtil;
 import org.graalvm.compiler.core.common.calc.Condition;
 import org.graalvm.compiler.core.common.type.IntegerStamp;
 import org.graalvm.compiler.core.common.type.StampFactory;
+import org.graalvm.compiler.graph.Node;
 import org.graalvm.compiler.graph.NodeClass;
+import org.graalvm.compiler.graph.spi.CanonicalizerTool;
 import org.graalvm.compiler.nodeinfo.NodeInfo;
 import org.graalvm.compiler.nodes.LogicNode;
 import org.graalvm.compiler.nodes.ValueNode;
 
 import jdk.vm.ci.code.CodeUtil;
-import jdk.vm.ci.meta.ConstantReflectionProvider;
+import org.graalvm.compiler.options.OptionValues;
 
 @NodeInfo(shortName = "|<|")
 public final class IntegerBelowNode extends IntegerLowerThanNode {
@@ -45,17 +49,33 @@ public final class IntegerBelowNode extends IntegerLowerThanNode {
         assert y.stamp() instanceof IntegerStamp;
     }
 
-    public static LogicNode create(ValueNode x, ValueNode y, ConstantReflectionProvider constantReflection) {
-        return OP.create(x, y, constantReflection);
+    public static LogicNode create(ValueNode x, ValueNode y) {
+        return OP.create(x, y);
+    }
+
+    public static LogicNode create(ConstantReflectionProvider constantReflection, MetaAccessProvider metaAccess, OptionValues options, Integer smallestCompareWidth, ValueNode x, ValueNode y) {
+        LogicNode value = OP.canonical(constantReflection, metaAccess, options, smallestCompareWidth, OP.getCondition(), false, x, y);
+        if (value != null) {
+            return value;
+        }
+        return create(x, y);
     }
 
     @Override
-    protected CompareNode duplicateModified(ValueNode newX, ValueNode newY) {
-        assert newX.stamp() instanceof IntegerStamp && newY.stamp() instanceof IntegerStamp;
-        return new IntegerBelowNode(newX, newY);
+    public Node canonical(CanonicalizerTool tool, ValueNode forX, ValueNode forY) {
+        ValueNode value = OP.canonical(tool.getConstantReflection(), tool.getMetaAccess(), tool.getOptions(), tool.smallestCompareWidth(), OP.getCondition(), false, forX, forY);
+        if (value != null) {
+            return value;
+        }
+        return this;
     }
 
     public static class BelowOp extends LowerOp {
+        @Override
+        protected CompareNode duplicateModified(ValueNode newX, ValueNode newY, boolean unorderedIsTrue) {
+            assert newX.stamp() instanceof IntegerStamp && newY.stamp() instanceof IntegerStamp;
+            return new IntegerBelowNode(newX, newY);
+        }
 
         @Override
         protected long upperBound(IntegerStamp stamp) {
@@ -108,7 +128,7 @@ public final class IntegerBelowNode extends IntegerLowerThanNode {
         }
 
         @Override
-        protected IntegerLowerThanNode create(ValueNode x, ValueNode y) {
+        protected IntegerLowerThanNode createNode(ValueNode x, ValueNode y) {
             return new IntegerBelowNode(x, y);
         }
     }

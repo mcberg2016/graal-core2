@@ -138,7 +138,7 @@ public abstract class MacroNode extends FixedWithNextNode implements Lowerable {
     @SuppressWarnings("try")
     protected StructuredGraph lowerReplacement(final StructuredGraph replacementGraph, LoweringTool tool) {
         final PhaseContext c = new PhaseContext(tool.getMetaAccess(), tool.getConstantReflection(), tool.getConstantFieldProvider(), tool.getLowerer(), tool.getReplacements(),
-                        tool.getStampProvider(), tool.getNodeCostProvider());
+                        tool.getStampProvider());
         if (!graph().hasValueProxies()) {
             new RemoveValueProxyPhase().apply(replacementGraph);
         }
@@ -174,7 +174,7 @@ public abstract class MacroNode extends FixedWithNextNode implements Lowerable {
                 }
             }
             InliningUtil.inline(invoke, replacementGraph, false, targetMethod);
-            Debug.dump(Debug.INFO_LOG_LEVEL, graph(), "After inlining replacement %s", replacementGraph);
+            Debug.dump(Debug.DETAILED_LEVEL, graph(), "After inlining replacement %s", replacementGraph);
         } else {
             if (isPlaceholderBci(invoke.bci())) {
                 throw new GraalError("%s: cannot lower to invoke with placeholder BCI: %s", graph(), this);
