@@ -35,7 +35,6 @@ import org.graalvm.compiler.core.common.cfg.Loop;
 import org.graalvm.compiler.core.common.RetryableBailoutException;
 import org.graalvm.compiler.core.common.type.Stamp;
 import org.graalvm.compiler.core.common.type.StampFactory;
-import org.graalvm.compiler.debug.Debug;
 import org.graalvm.compiler.graph.Node;
 import org.graalvm.compiler.graph.Position;
 import org.graalvm.compiler.loop.CountedLoopInfo;
@@ -45,7 +44,6 @@ import static org.graalvm.compiler.loop.MathUtil.add;
 import static org.graalvm.compiler.loop.MathUtil.sub;
 import org.graalvm.compiler.loop.LoopEx;
 import org.graalvm.compiler.loop.LoopFragmentWhole;
-import org.graalvm.compiler.loop.LoopFragment;
 import org.graalvm.compiler.nodeinfo.InputType;
 import org.graalvm.compiler.nodes.AbstractBeginNode;
 import org.graalvm.compiler.nodes.AbstractEndNode;
@@ -64,7 +62,6 @@ import org.graalvm.compiler.nodes.InvokeNode;
 import org.graalvm.compiler.nodes.LogicNode;
 import org.graalvm.compiler.nodes.LoopBeginNode;
 import org.graalvm.compiler.nodes.LoopExitNode;
-import org.graalvm.compiler.nodes.MergeNode;
 import org.graalvm.compiler.nodes.PhiNode;
 import org.graalvm.compiler.nodes.PiNode;
 import org.graalvm.compiler.nodes.StructuredGraph;
@@ -82,13 +79,11 @@ import org.graalvm.compiler.nodes.extended.GuardingNode;
 import org.graalvm.compiler.nodes.extended.SwitchNode;
 import org.graalvm.compiler.nodes.memory.ReadNode;
 import org.graalvm.compiler.nodes.memory.FixedAccessNode;
-import org.graalvm.compiler.nodes.memory.HeapAccess.BarrierType;
 import org.graalvm.compiler.nodes.memory.address.AddressNode;
 import org.graalvm.compiler.nodes.virtual.CommitAllocationNode;
 import org.graalvm.compiler.phases.common.CanonicalizerPhase;
 import org.graalvm.compiler.phases.tiers.PhaseContext;
 
-import jdk.vm.ci.meta.JavaConstant;
 import jdk.vm.ci.meta.JavaKind;
 
 public abstract class LoopTransformations {
@@ -236,7 +231,7 @@ public abstract class LoopTransformations {
      * be updated to produce vector alignment if applicable.
      */
 
-    public static void insertPrePostLoops(LoopEx loop, PhaseContext context, CanonicalizerPhase canonicalizer, StructuredGraph graph) {
+    public static void insertPrePostLoops(LoopEx loop, StructuredGraph graph) {
         LoopFragmentWhole preLoop = loop.whole();
         CountedLoopInfo preCounted = preLoop.loop().counted();
         IfNode preLimit = preCounted.getLimitTest();
@@ -378,7 +373,9 @@ public abstract class LoopTransformations {
                 postMergeIvValues.addInput(mainPhiNode);
                 for (Node curNode : boundsExpressions) {
                     // Add as many pre phi values to carry as there are bounds (i.e. test paths)
-                    postMergeIvValues.addInput(prePhiNode);
+                    if (curNode != null) {
+                        postMergeIvValues.addInput(prePhiNode);
+                    }
                 }
                 postPhiNode.initializeValueAt(0, postMergeIvValues);
                 for (int i = 0; i < mainMergeState.values().count(); i++) {
@@ -416,22 +413,13 @@ public abstract class LoopTransformations {
     }
 
     public static LoopExitNode getSingleExitFromLoop(LoopBeginNode curLoopBegin) {
-        LoopExitNode exitNode = null;
-        for (LoopExitNode curLoopExit : curLoopBegin.loopExits()) {
-            exitNode = curLoopExit;
-            break;
-        }
-        return exitNode;
+        return curLoopBegin.loopExits().first();
     }
 
     public static EndNode getSingleEndFromLoop(LoopBeginNode curLoopBegin) {
         EndNode curLoopEndNode = null;
-        FixedWithNextNode node = null;
+        FixedWithNextNode node = curLoopBegin.loopExits().first();
         FixedNode lastNode = null;
-        for (LoopExitNode curLoopExit : curLoopBegin.loopExits()) {
-            node = (FixedWithNextNode) curLoopExit;
-            break;
-        }
         // Find the last node after the exit blocks starts
         while (true) {
             if (node == null) {
@@ -487,9 +475,9 @@ public abstract class LoopTransformations {
                         }
                     }
                     // Compare the read length and the calculated limit expression.
-                    LogicNode ifTest = (LogicNode) graph.addWithoutUnique(new IntegerBelowNode(origLimit, arrayLength));
+                    LogicNode ifTest = graph.addWithoutUnique(new IntegerBelowNode(origLimit, arrayLength));
                     if (arrayLengthTrip) {
-                        LogicNode additionalTest = (LogicNode) graph.addWithoutUnique(new IntegerEqualsNode(origLimit, arrayLength));
+                        LogicNode additionalTest = graph.addWithoutUnique(new IntegerEqualsNode(origLimit, arrayLength));
                         ifTest = LogicNode.or(additionalTest, ifTest, 1.0);
                     }
                     AbstractBeginNode trueSuccessor;
@@ -529,7 +517,6 @@ public abstract class LoopTransformations {
         boolean arrayLengthTrip = false;
         if (boundsExpressions.isEmpty() == false) {
             List<Node> workList = new ArrayList<>();
-            StructuredGraph graph = preLimit.graph();
             LogicNode ifTest = preLimit.condition();
             CompareNode compareNode = (CompareNode) ifTest;
             ValueNode checkValue = null;
@@ -628,7 +615,6 @@ public abstract class LoopTransformations {
         LoopBeginNode origLoopBegin = origLoop.loop().loopBegin();
         LoopBeginNode targetLoopBegin = targetLoop.getDuplicatedNode(origLoopBegin);
         List<Node> workList = new ArrayList<>();
-        StructuredGraph graph = origLoop.graph();
         for (Node preNode : origLoop.loop().inside().nodes()) {
             Node node = targetLoop.getDuplicatedNode(preNode);
             if (node instanceof FixedAccessNode) {
@@ -749,10 +735,7 @@ public abstract class LoopTransformations {
         LoopBeginNode curBeginNode = loop.loopBegin();
         boolean isCanonical = (curBeginNode.loopFrequency() > 2.0 && loop.canDuplicateLoop());
         Loop<Block> curLoop = loop.loop();
-        for (Loop<Block> child : curLoop.getChildren()) {
-            isCanonical = false;
-            break;
-        }
+        isCanonical = curLoop.getChildren().isEmpty();
         if (isCanonical) {
             isCanonical = false;
             ValueNode outerLoopPhi = limitTestContainsOuterPhi(loop);
@@ -780,7 +763,6 @@ public abstract class LoopTransformations {
                         splittingOk = false;
                     } else {
                         AbstractMergeNode mergeNode = endNode.merge();
-                        int endCount = mergeNode.forwardEndCount();
                         int loopEndCount = 1;
                         for (int i = 1; i < mergeNode.forwardEndCount(); i++) {
                             EndNode curEnd = mergeNode.forwardEndAt(i);

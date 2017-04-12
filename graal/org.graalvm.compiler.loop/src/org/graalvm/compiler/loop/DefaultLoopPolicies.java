@@ -29,44 +29,28 @@ import static jdk.vm.ci.meta.DeoptimizationReason.BoundsCheckException;
 
 import java.util.List;
 
-import org.graalvm.compiler.core.common.type.IntegerStamp;
-import org.graalvm.compiler.core.common.type.Stamp;
-import org.graalvm.compiler.core.common.type.StampFactory;
 import org.graalvm.compiler.debug.Debug;
 import org.graalvm.compiler.debug.DebugCounter;
 import org.graalvm.compiler.graph.Node;
 import org.graalvm.compiler.graph.NodeBitMap;
 import org.graalvm.compiler.nodes.AbstractBeginNode;
-import org.graalvm.compiler.nodes.ConstantNode;
 import org.graalvm.compiler.nodes.ControlSplitNode;
 import org.graalvm.compiler.nodes.DeoptimizeNode;
 import org.graalvm.compiler.nodes.FixedNode;
 import org.graalvm.compiler.nodes.FixedWithNextNode;
 import org.graalvm.compiler.nodes.FrameState;
-import org.graalvm.compiler.nodes.IfNode;
-import org.graalvm.compiler.nodes.LogicNode;
 import org.graalvm.compiler.nodes.GuardNode;
 import org.graalvm.compiler.nodes.LoopBeginNode;
 import org.graalvm.compiler.nodes.MergeNode;
-import org.graalvm.compiler.nodes.PiNode;
-import org.graalvm.compiler.nodes.StructuredGraph;
-import org.graalvm.compiler.nodes.ValueNode;
 import org.graalvm.compiler.nodes.VirtualState;
 import org.graalvm.compiler.nodes.VirtualState.VirtualClosure;
 import org.graalvm.compiler.nodes.cfg.Block;
 import org.graalvm.compiler.nodes.cfg.ControlFlowGraph;
 import org.graalvm.compiler.nodes.debug.ControlFlowAnchorNode;
 import org.graalvm.compiler.nodes.extended.GuardingNode;
-import org.graalvm.compiler.nodes.java.AbstractNewArrayNode;
-import org.graalvm.compiler.nodes.java.AccessIndexedNode;
 import org.graalvm.compiler.nodes.java.TypeSwitchNode;
 import org.graalvm.compiler.nodes.memory.ReadNode;
 import org.graalvm.compiler.nodes.memory.WriteNode;
-import org.graalvm.compiler.nodes.memory.HeapAccess.BarrierType;
-import org.graalvm.compiler.nodes.memory.address.AddressNode;
-import org.graalvm.compiler.nodes.memory.address.OffsetAddressNode;
-import org.graalvm.compiler.nodes.spi.LoweringTool;
-import org.graalvm.compiler.nodes.java.LoadIndexedNode;
 import org.graalvm.compiler.options.Option;
 import org.graalvm.compiler.options.OptionType;
 import org.graalvm.compiler.options.OptionValues;
@@ -75,7 +59,6 @@ import org.graalvm.compiler.options.OptionKey;
 import jdk.vm.ci.code.BytecodeFrame;
 import jdk.vm.ci.meta.MetaAccessProvider;
 import jdk.vm.ci.meta.ConstantReflectionProvider;
-import jdk.vm.ci.code.TargetDescription;
 
 public class DefaultLoopPolicies implements LoopPolicies {
     @Option(help = "", type = OptionType.Expert) public static final OptionKey<Integer> LoopUnswitchMaxIncrease = new OptionKey<>(500);
@@ -157,12 +140,10 @@ public class DefaultLoopPolicies implements LoopPolicies {
             return false;
         }
         OptionValues options = loop.entryPoint().getOptions();
-        CountedLoopInfo counted = loop.counted();
         if (EliminateRangeChecks.getValue(options)) {
             // Check if there are any range checks to eliminate.
             // We do not need to worry about loop exits as unswitching has already happened.
             int rangeCheckCount = 0;
-            InductionVariable iv = null;
             for (Node node : loop.inside().nodes()) {
                 if (node instanceof ReadNode) {
                     ReadNode readNode = (ReadNode) node;
@@ -171,8 +152,6 @@ public class DefaultLoopPolicies implements LoopPolicies {
                         if (guarding instanceof GuardNode) {
                             GuardNode guard = (GuardNode) guarding;
                             if (guard.getReason() == BoundsCheckException) {
-                                iv = counted.getCounter();
-                                ValueNode init = counted.getStart();
                                 rangeCheckCount++;
                             }
                         }
@@ -184,8 +163,6 @@ public class DefaultLoopPolicies implements LoopPolicies {
                         if (guarding instanceof GuardNode) {
                             GuardNode guard = (GuardNode) guarding;
                             if (guard.getReason() == BoundsCheckException) {
-                                iv = counted.getCounter();
-                                ValueNode init = counted.getStart();
                                 rangeCheckCount++;
                             }
                         }

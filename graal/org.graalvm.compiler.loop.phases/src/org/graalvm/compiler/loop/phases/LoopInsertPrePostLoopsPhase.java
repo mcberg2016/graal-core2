@@ -28,17 +28,14 @@ import org.graalvm.compiler.loop.LoopEx;
 import org.graalvm.compiler.loop.LoopPolicies;
 import org.graalvm.compiler.loop.LoopsData;
 import org.graalvm.compiler.nodes.StructuredGraph;
-import org.graalvm.compiler.phases.common.CanonicalizerPhase;
 import org.graalvm.compiler.phases.tiers.PhaseContext;
 
 public class LoopInsertPrePostLoopsPhase extends LoopPhase<LoopPolicies> {
 
     private static final DebugCounter INSERT_PRE_POST_LOOPS = Debug.counter("InsertPrePostLoops");
-    private final CanonicalizerPhase canonicalizer;
 
-    public LoopInsertPrePostLoopsPhase(CanonicalizerPhase canonicalizer, LoopPolicies policies) {
+    public LoopInsertPrePostLoopsPhase(LoopPolicies policies) {
         super(policies);
-        this.canonicalizer = canonicalizer;
     }
 
     @Override
@@ -53,7 +50,7 @@ public class LoopInsertPrePostLoopsPhase extends LoopPhase<LoopPolicies> {
                 if (getPolicies().shouldEliminateRangeChecks(loop, context.getConstantReflection()) ||
                                 getPolicies().shouldPartiallyUnroll(loop)) {
                     Debug.log("InsertPrePostLoops %s", loop);
-                    LoopTransformations.insertPrePostLoops(loop, context, canonicalizer, graph);
+                    LoopTransformations.insertPrePostLoops(loop, graph);
                     INSERT_PRE_POST_LOOPS.increment();
                     Debug.dump(Debug.INFO_LOG_LEVEL, graph, "InsertPrePostLoops %s", loop);
                 }
