@@ -28,37 +28,37 @@ import org.graalvm.compiler.loop.LoopEx;
 import org.graalvm.compiler.loop.LoopPolicies;
 import org.graalvm.compiler.loop.LoopsData;
 import org.graalvm.compiler.nodes.StructuredGraph;
-import org.graalvm.compiler.options.OptionValues;
 import org.graalvm.compiler.phases.tiers.PhaseContext;
 
-public class LoopInsertPrePostLoopsPhase extends LoopPhase<LoopPolicies> {
+public class LoopPartialUnrollPhase extends LoopPhase<LoopPolicies> {
 
-    private static final DebugCounter INSERT_PRE_POST_LOOPS = Debug.counter("InsertPrePostLoops");
-    public OptionValues options;
+    private static final DebugCounter PARTIAL_UNROLL_LOOPS = Debug.counter("LoopPartialUnroll");
 
-    public LoopInsertPrePostLoopsPhase(LoopPolicies policies, OptionValues options) {
+    public LoopPartialUnrollPhase(LoopPolicies policies) {
         super(policies);
-        this.options = options;
     }
 
     @Override
     protected void run(StructuredGraph graph, PhaseContext context) {
         if (graph.hasLoops()) {
-            final LoopsData dataCounted = new LoopsData(graph);
-            dataCounted.detectedCountedLoops();
-            for (LoopEx loop : dataCounted.countedLoops()) {
-                if (LoopTransformations.isQualifyingLoop(loop) == false) {
-                    continue;
+            boolean changed = true;
+            while (changed) {
+                LoopsData dataCounted = new LoopsData(graph);
+                dataCounted.detectedCountedLoops();
+                changed = false;
+                for (LoopEx loop : dataCounted.countedLoops()) {
+                    if (LoopTransformations.isUnrollableLoop(loop) == false) {
+                        continue;
+                    }
+                    if (getPolicies().shouldPartiallyUnroll(loop)) {
+                        Debug.log("LoopPartialUnroll %s", loop);
+                        changed |= LoopTransformations.partialUnroll(loop, graph);
+                        PARTIAL_UNROLL_LOOPS.increment();
+                        Debug.dump(Debug.DETAILED_LEVEL, graph, "LoopPartialUnroll %s", loop);
+                    }
                 }
-                if (getPolicies().shouldEliminateRangeChecks(loop, context.getConstantReflection()) ||
-                                getPolicies().shouldPartiallyUnroll(loop)) {
-                    Debug.log("InsertPrePostLoops %s", loop);
-                    LoopTransformations.insertPrePostLoops(loop, graph, options);
-                    INSERT_PRE_POST_LOOPS.increment();
-                    Debug.dump(Debug.DETAILED_LEVEL, graph, "InsertPrePostLoops %s", loop);
-                }
+                dataCounted.deleteUnusedNodes();
             }
-            dataCounted.deleteUnusedNodes();
         }
     }
 

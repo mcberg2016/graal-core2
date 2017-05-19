@@ -23,9 +23,14 @@
 package org.graalvm.compiler.core.phases;
 
 import static org.graalvm.compiler.core.common.GraalOptions.ImmutableCode;
+import static org.graalvm.compiler.core.common.GraalOptions.PartialUnroll;
+import static org.graalvm.compiler.core.common.GraalOptions.OptLoopTransform;
 import static org.graalvm.compiler.phases.common.DeadCodeEliminationPhase.Optionality.Required;
 
 import org.graalvm.compiler.core.common.GraalOptions;
+import org.graalvm.compiler.loop.DefaultLoopPolicies;
+import org.graalvm.compiler.loop.LoopPolicies;
+import org.graalvm.compiler.loop.phases.LoopPartialUnrollPhase;
 import org.graalvm.compiler.nodes.spi.LoweringTool;
 import org.graalvm.compiler.options.Option;
 import org.graalvm.compiler.options.OptionKey;
@@ -74,6 +79,13 @@ public class LowTier extends PhaseSuite<LowTierContext> {
 
         appendPhase(new FixReadsPhase(true, new SchedulePhase(GraalOptions.StressTestEarlyReads.getValue(options) ? SchedulingStrategy.EARLIEST : SchedulingStrategy.LATEST_OUT_OF_LOOPS)));
 
+        LoopPolicies loopPolicies = createLoopPolicies();
+        if (OptLoopTransform.getValue(options)) {
+            if (PartialUnroll.getValue(options)) {
+                appendPhase(new LoopPartialUnrollPhase(loopPolicies));
+            }
+        }
+
         appendPhase(canonicalizerWithoutGVN);
 
         appendPhase(new UseTrappingNullChecksPhase());
@@ -83,5 +95,9 @@ public class LowTier extends PhaseSuite<LowTierContext> {
         appendPhase(new PropagateDeoptimizeProbabilityPhase());
 
         appendPhase(new SchedulePhase(SchedulePhase.SchedulingStrategy.FINAL_SCHEDULE));
+    }
+
+    public LoopPolicies createLoopPolicies() {
+        return new DefaultLoopPolicies();
     }
 }

@@ -74,6 +74,17 @@ public class LoopFragmentInside extends LoopFragment {
         }
     };
 
+    private final DuplicationReplacement dataFixWithinAfter = new DuplicationReplacement() {
+
+        @Override
+        public Node replacement(Node oriInput) {
+            if (!(oriInput instanceof ValueNode)) {
+                return oriInput;
+            }
+            return prim((ValueNode) oriInput);
+        }
+    };
+
     public LoopFragmentInside(LoopEx loop) {
         super(loop);
     }
@@ -119,6 +130,12 @@ public class LoopFragmentInside extends LoopFragment {
         AbstractBeginNode entry = getDuplicatedNode(loop.loopBegin());
         loop.entryPoint().replaceAtPredecessor(entry);
         end.setNext(loop.entryPoint());
+    }
+
+    public void insertWithinAfter(LoopEx loop) {
+        assert this.isDuplicate() && this.original().loop() == loop;
+
+        patchNodes(dataFixWithinAfter);
     }
 
     @Override

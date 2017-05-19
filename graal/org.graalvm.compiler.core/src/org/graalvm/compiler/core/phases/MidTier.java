@@ -63,7 +63,7 @@ public class MidTier extends PhaseSuite<MidTierContext> {
         LoopPolicies loopPolicies = createLoopPolicies();
         if (OptLoopTransform.getValue(options)) {
             if (LoopInsertPrePost.getValue(options)) {
-                appendPhase(new LoopInsertPrePostLoopsPhase(loopPolicies));
+                appendPhase(new LoopInsertPrePostLoopsPhase(loopPolicies, options));
             }
         }
 

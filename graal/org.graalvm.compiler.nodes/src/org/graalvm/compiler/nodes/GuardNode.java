@@ -63,6 +63,7 @@ public class GuardNode extends FloatingAnchoredNode implements Canonicalizable, 
     protected JavaConstant speculation;
     protected DeoptimizationAction action;
     protected boolean negated;
+    boolean motionable;
 
     public GuardNode(LogicNode condition, AnchoringNode anchor, DeoptimizationReason reason, DeoptimizationAction action, boolean negated, JavaConstant speculation) {
         this(TYPE, condition, anchor, reason, action, negated, speculation);
@@ -76,6 +77,7 @@ public class GuardNode extends FloatingAnchoredNode implements Canonicalizable, 
         this.action = action;
         this.negated = negated;
         this.speculation = speculation;
+        this.motionable = true;
     }
 
     /**
@@ -115,6 +117,14 @@ public class GuardNode extends FloatingAnchoredNode implements Canonicalizable, 
 
     public void setSpeculation(JavaConstant speculation) {
         this.speculation = speculation;
+    }
+
+    public boolean isMotionable() {
+        return motionable;
+    }
+
+    public void clearMotionable() {
+        motionable = false;
     }
 
     @Override

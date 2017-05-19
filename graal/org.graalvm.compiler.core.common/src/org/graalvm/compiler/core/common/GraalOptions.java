@@ -112,6 +112,12 @@ public final class GraalOptions {
     @Option(help = "", type = OptionType.Debug)
     public static final OptionKey<Boolean> LoopInsertPrePost = new OptionKey<>(true);
 
+    @Option(help = "", type = OptionType.Debug)
+    public static final OptionKey<Boolean> PartialUnroll = new OptionKey<>(true);
+
+    @Option(help = "", type = OptionType.Debug)
+    public static final OptionKey<Boolean> BlackBox = new OptionKey<>(true);
+
     @Option(help = "", type = OptionType.Expert)
     public static final OptionKey<Float> MinimumPeelProbability = new OptionKey<>(0.35f);
 

@@ -31,7 +31,6 @@ import java.util.Iterator;
 import java.util.List;
 
 import org.graalvm.compiler.graph.Graph.Mark;
-import org.graalvm.compiler.core.common.cfg.Loop;
 import org.graalvm.compiler.core.common.RetryableBailoutException;
 import org.graalvm.compiler.core.common.type.Stamp;
 import org.graalvm.compiler.core.common.type.StampFactory;
@@ -40,10 +39,13 @@ import org.graalvm.compiler.graph.Position;
 import org.graalvm.compiler.loop.CountedLoopInfo;
 import org.graalvm.compiler.loop.InductionVariable;
 import org.graalvm.compiler.loop.InductionVariable.Direction;
+import org.graalvm.compiler.loop.BasicInductionVariable;
+import org.graalvm.compiler.loop.DerivedInductionVariable;
 import static org.graalvm.compiler.loop.MathUtil.add;
 import static org.graalvm.compiler.loop.MathUtil.sub;
 import org.graalvm.compiler.loop.LoopEx;
 import org.graalvm.compiler.loop.LoopFragmentWhole;
+import org.graalvm.compiler.loop.LoopFragmentInside;
 import org.graalvm.compiler.nodeinfo.InputType;
 import org.graalvm.compiler.nodes.AbstractBeginNode;
 import org.graalvm.compiler.nodes.AbstractEndNode;
@@ -61,6 +63,7 @@ import org.graalvm.compiler.nodes.IfNode;
 import org.graalvm.compiler.nodes.InvokeNode;
 import org.graalvm.compiler.nodes.LogicNode;
 import org.graalvm.compiler.nodes.LoopBeginNode;
+import org.graalvm.compiler.nodes.LoopEndNode;
 import org.graalvm.compiler.nodes.LoopExitNode;
 import org.graalvm.compiler.nodes.PhiNode;
 import org.graalvm.compiler.nodes.PiNode;
@@ -68,21 +71,27 @@ import org.graalvm.compiler.nodes.StructuredGraph;
 import org.graalvm.compiler.nodes.ValueNode;
 import org.graalvm.compiler.nodes.ValuePhiNode;
 import org.graalvm.compiler.nodes.calc.AddNode;
+import org.graalvm.compiler.nodes.calc.BinaryArithmeticNode;
 import org.graalvm.compiler.nodes.calc.CompareNode;
 import org.graalvm.compiler.nodes.calc.ConditionalNode;
 import org.graalvm.compiler.nodes.calc.IntegerBelowNode;
 import org.graalvm.compiler.nodes.calc.IntegerEqualsNode;
 import org.graalvm.compiler.nodes.calc.IntegerLessThanNode;
+import org.graalvm.compiler.nodes.calc.LeftShiftNode;
+import org.graalvm.compiler.nodes.calc.RightShiftNode;
 import org.graalvm.compiler.nodes.calc.SubNode;
-import org.graalvm.compiler.nodes.cfg.Block;
 import org.graalvm.compiler.nodes.extended.GuardingNode;
 import org.graalvm.compiler.nodes.extended.SwitchNode;
 import org.graalvm.compiler.nodes.memory.ReadNode;
 import org.graalvm.compiler.nodes.memory.FixedAccessNode;
+import org.graalvm.compiler.nodes.memory.MemoryPhiNode;
 import org.graalvm.compiler.nodes.memory.address.AddressNode;
 import org.graalvm.compiler.nodes.virtual.CommitAllocationNode;
 import org.graalvm.compiler.phases.common.CanonicalizerPhase;
 import org.graalvm.compiler.phases.tiers.PhaseContext;
+
+import org.graalvm.compiler.options.OptionValues;
+import static org.graalvm.compiler.core.common.GraalOptions.BlackBox;
 
 import jdk.vm.ci.meta.JavaKind;
 
@@ -164,6 +173,208 @@ public abstract class LoopTransformations {
         // TODO (gd) probabilities need some amount of fixup.. (probably also in other transforms)
     }
 
+    public static boolean partialUnroll(LoopEx loop, StructuredGraph graph) {
+        boolean changed = false;
+        CountedLoopInfo mainCounted = loop.counted();
+        LoopBeginNode mainLoopBegin = loop.loopBegin();
+        InductionVariable iv = mainCounted.getCounter();
+        IfNode mainLimit = mainCounted.getLimitTest();
+        LogicNode ifTest = mainLimit.condition();
+        CompareNode compareNode = (CompareNode) ifTest;
+        ValueNode compareBound = null;
+        ValueNode curPhi = iv.valueNode();
+        if (compareNode.getX() == curPhi) {
+            compareBound = compareNode.getY();
+        } else if (compareNode.getY() == curPhi) {
+            compareBound = compareNode.getX();
+        }
+        long oldStride = iv.constantStride();
+        LoopFragmentInside newSegment = loop.inside().duplicate();
+        newSegment.insertWithinAfter(loop);
+        ValueNode inductionNode = iv.valueNode();
+        Node segmentOrigOp = null;
+        Node replacementOp = null;
+        Node newStrideNode = null;
+        if (inductionNode instanceof PhiNode) {
+            PhiNode mainPhiNode = (PhiNode) inductionNode;
+            // Rework each phi with a loop carried dependence
+            for (Node usage : mainPhiNode.usages()) {
+                if (loop.isOutsideLoop(usage) == false) {
+                    for (int i = 0; i < mainPhiNode.valueCount(); i++) {
+                        ValueNode v = mainPhiNode.valueAt(i);
+                        if (v == usage) {
+                            Node node = newSegment.getDuplicatedNode(usage);
+                            int inputCnt = 0;
+                            for (Node input : usage.inputs()) {
+                                inputCnt++;
+                                if (input == mainPhiNode) {
+                                    break;
+                                }
+                            }
+                            int newInputCnt = 0;
+                            for (Node input : node.inputs()) {
+                                newInputCnt++;
+                                if (newInputCnt == inputCnt) {
+                                    replacementOp = input;
+                                    newStrideNode = node;
+                                    // Use this loops induction phi as input to the new stride node
+                                    node.replaceFirstInput(input, inductionNode);
+                                    segmentOrigOp = usage;
+                                    break;
+                                }
+                            }
+                            // Update the induction phi with new stride node
+                            mainPhiNode.setValueAt(i, (ValueNode) newStrideNode);
+                            changed |= true;
+                        }
+                    }
+                }
+                if (newStrideNode != null) {
+                    break;
+                }
+            }
+        }
+
+        if (changed) {
+            // Patch the new segments induction uses of replacementOp with the old stride node
+            if (inductionNode instanceof PhiNode) {
+                PhiNode mainPhiNode = (PhiNode) inductionNode;
+                for (Node usage : mainPhiNode.usages()) {
+                    if (usage == segmentOrigOp) {
+                        continue;
+                    }
+                    if (loop.isOutsideLoop(usage) == false) {
+                        Node node = newSegment.getDuplicatedNode(usage);
+                        if (node instanceof CompareNode) {
+                            continue;
+                        }
+                        node.replaceFirstInput(replacementOp, segmentOrigOp);
+                    }
+                }
+            }
+
+            // If merge the duplicate code into the loop and remove redundant code
+            placeNewSegmentAndCleanup(mainCounted, mainLoopBegin, newSegment);
+            int unrollFactor = mainLoopBegin.getUnrollFactor();
+            // First restore the old pattern of the loop exit condition so we can update it one way
+            if (unrollFactor > 1) {
+                if (compareBound instanceof LeftShiftNode) {
+                    LeftShiftNode left = (LeftShiftNode) compareBound;
+                    RightShiftNode right = (RightShiftNode) left.getX();
+                    ValueNode oldcompareBound = right.getX();
+                    compareNode.replaceFirstInput(left, oldcompareBound);
+                    left.safeDelete();
+                    right.safeDelete();
+                    compareBound = oldcompareBound;
+                }
+            }
+            unrollFactor *= 2;
+            mainLoopBegin.setUnrollFactor(unrollFactor);
+            // Reset stride to include new segment in loop control.
+            oldStride *= 2;
+            // Now update the induction op and the exit condition
+            if (iv instanceof BasicInductionVariable) {
+                boolean useInt = true;
+                ConstantNode newStrideVal = null;
+                BasicInductionVariable biv = (BasicInductionVariable) iv;
+                BinaryArithmeticNode<?> newOp = (BinaryArithmeticNode<?>) newStrideNode;
+                Stamp strideStamp = newOp.stamp();
+                if (strideStamp.getStackKind() == JavaKind.Long) {
+                    newStrideVal = graph.unique(ConstantNode.forLong(oldStride));
+                    useInt = false;
+                } else {
+                    newStrideVal = graph.unique(ConstantNode.forInt((int) oldStride));
+                }
+                newOp.setY(newStrideVal);
+                biv.setOP(newOp);
+                // Now use the current unrollFactor to update the exit condition to power of two
+                if (unrollFactor > 1) {
+                    ConstantNode shiftVal = null;
+                    int[] lookupVal = {0, 0, 1, 0, 2, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 4};
+                    if (useInt) {
+                        shiftVal = graph.unique(ConstantNode.forInt(lookupVal[unrollFactor]));
+                    } else {
+                        shiftVal = graph.unique(ConstantNode.forLong(lookupVal[unrollFactor]));
+                    }
+                    RightShiftNode right = graph.addWithoutUnique(new RightShiftNode(compareBound, shiftVal));
+                    LeftShiftNode left = graph.addWithoutUnique(new LeftShiftNode(right, shiftVal));
+                    compareNode.replaceFirstInput(compareBound, left);
+                }
+                mainLoopBegin.setLoopFrequency(mainLoopBegin.loopFrequency() / 2);
+            }
+        }
+        return changed;
+    }
+
+    public static void placeNewSegmentAndCleanup(CountedLoopInfo mainCounted, LoopBeginNode mainLoopBegin, LoopFragmentInside newSegment) {
+        // Discard the segment entry and its flow, after if merging it into the loop
+        IfNode loopTest = mainCounted.getLimitTest();
+        IfNode newSegmentTest = newSegment.getDuplicatedNode(loopTest);
+        AbstractBeginNode trueSuccessor = loopTest.trueSuccessor();
+        AbstractBeginNode falseSuccessor = loopTest.falseSuccessor();
+        FixedNode firstNode = null;
+        FixedNode lastNode = null;
+        boolean codeInTrueSide = false;
+        if (trueSuccessor == mainCounted.getBody()) {
+            firstNode = trueSuccessor.next();
+            codeInTrueSide = true;
+        } else {
+            assert (falseSuccessor == mainCounted.getBody());
+            firstNode = falseSuccessor.next();
+        }
+        AbstractBeginNode startBlockNode = null;
+        trueSuccessor = newSegmentTest.trueSuccessor();
+        falseSuccessor = newSegmentTest.falseSuccessor();
+        if (codeInTrueSide) {
+            startBlockNode = trueSuccessor;
+        } else {
+            startBlockNode = falseSuccessor;
+        }
+        if (startBlockNode != null) {
+            FixedWithNextNode node = startBlockNode;
+            while (true) {
+                if (node == null) {
+                    break;
+                }
+                FixedNode next = node.next();
+                if (next instanceof FixedAccessNode) {
+                    FixedAccessNode accessNode = (FixedAccessNode) next;
+                    Node curGuard = (Node) accessNode.getGuard();
+                    accessNode.replaceFirstInput(curGuard, mainLoopBegin);
+                }
+                if (next instanceof FixedWithNextNode) {
+                    node = (FixedWithNextNode) next;
+                } else {
+                    lastNode = next;
+                    break;
+                }
+            }
+            assert (lastNode != null);
+            LoopEndNode loopEndNode = getSingleLoopEndFromLoop(mainLoopBegin);
+            FixedNode lastCodeNode = (FixedNode) loopEndNode.predecessor();
+            FixedNode newSegmentFirstNode = newSegment.getDuplicatedNode(firstNode);
+            FixedNode newSegmentLastNode = newSegment.getDuplicatedNode(lastCodeNode);
+            newSegmentLastNode.clearSuccessors();
+            startBlockNode.setNext(lastNode);
+            lastCodeNode.replaceFirstSuccessor(loopEndNode, newSegmentFirstNode);
+            newSegmentLastNode.replaceFirstSuccessor(lastNode, loopEndNode);
+            FixedWithNextNode oldLastNode = (FixedWithNextNode) lastCodeNode;
+            oldLastNode.setNext(newSegmentFirstNode);
+            FixedWithNextNode newLastNode = (FixedWithNextNode) newSegmentLastNode;
+            newLastNode.setNext(loopEndNode);
+            startBlockNode.clearSuccessors();
+            lastNode.safeDelete();
+            Node newSegmentTestStart = newSegmentTest.predecessor();
+            LogicNode newSegmentIfTest = newSegmentTest.condition();
+            newSegmentTestStart.clearSuccessors();
+            newSegmentTest.safeDelete();
+            newSegmentIfTest.safeDelete();
+            trueSuccessor.safeDelete();
+            falseSuccessor.safeDelete();
+            newSegmentTestStart.safeDelete();
+        }
+    }
+
     /*
      * @formatter:off
      * This function splits candidate loops into pre, main and post loops,
@@ -234,11 +445,16 @@ public abstract class LoopTransformations {
      * @formatter:on
      */
 
-    public static void insertPrePostLoops(LoopEx loop, StructuredGraph graph) {
+    public static void insertPrePostLoops(LoopEx loop, StructuredGraph graph, OptionValues options) {
         LoopFragmentWhole preLoop = loop.whole();
         CountedLoopInfo preCounted = preLoop.loop().counted();
         IfNode preLimit = preCounted.getLimitTest();
-        List<Node> boundsExpressions = findBoundsExpressions(preLoop.loop());
+        List<Node> boundsExpressions = null;
+        if (BlackBox.getValue(options)) {
+            boundsExpressions = new ArrayList<>();
+        } else {
+            boundsExpressions = findBoundsExpressions(preLoop.loop());
+        }
         if (preLimit != null) {
             LoopBeginNode preLoopBegin = loop.loopBegin();
             EndNode preEndNode = getSingleEndFromLoop(preLoopBegin);
@@ -255,6 +471,7 @@ public abstract class LoopTransformations {
             preLoopBegin.incrementSplits();
             preLoopBegin.incrementSplits();
             preLoopBegin.setPreLoop();
+            markGuards(loop, mainLoop, postLoop);
 
             // Handle original code has guards loaded and the old continuation code.
             AbstractMergeNode postMergeNode = preMergeNode;
@@ -332,6 +549,20 @@ public abstract class LoopTransformations {
             // Change the preLoop to execute one iteration for now
             updatePreLoopLimit(preLimit, preIv, preCounted);
             preLoopBegin.setLoopFrequency(1);
+            mainLoopBegin.setLoopFrequency(Math.max(0.0, mainLoopBegin.loopFrequency() - 1));
+            postLoopBegin.setLoopFrequency(Math.max(0.0, postLoopBegin.loopFrequency() - 1));
+        }
+    }
+
+    public static void markGuards(LoopEx loop, LoopFragmentWhole mainLoop, LoopFragmentWhole postLoop) {
+        for (GuardNode guard : loop.inside().nodes().filter(GuardNode.class)) {
+            if (guard.getReason() == BoundsCheckException) {
+                guard.clearMotionable();
+                GuardNode mainGuardNode = mainLoop.getDuplicatedNode(guard);
+                mainGuardNode.clearMotionable();
+                GuardNode postGuardNode = postLoop.getDuplicatedNode(guard);
+                postGuardNode.clearMotionable();
+            }
         }
     }
 
@@ -412,6 +643,10 @@ public abstract class LoopTransformations {
 
     public static LoopExitNode getSingleExitFromLoop(LoopBeginNode curLoopBegin) {
         return curLoopBegin.loopExits().first();
+    }
+
+    public static LoopEndNode getSingleLoopEndFromLoop(LoopBeginNode curLoopBegin) {
+        return curLoopBegin.loopEnds().first();
     }
 
     public static EndNode getSingleEndFromLoop(LoopBeginNode curLoopBegin) {
@@ -600,12 +835,10 @@ public abstract class LoopTransformations {
         // Re-wire the new condition into preLimit
         if (ifTest instanceof IntegerLessThanNode) {
             LogicNode newIfTest = graph.addWithoutUnique(new IntegerLessThanNode(varX, varY));
-            ifTest.replaceAtUsages(newIfTest);
-            ifTest.safeDelete();
+            ifTest.replaceAndDelete(newIfTest);
         } else if (ifTest instanceof IntegerEqualsNode) {
             LogicNode newIfTest = graph.addWithoutUnique(new IntegerEqualsNode(varX, varY));
-            ifTest.replaceAtUsages(newIfTest);
-            ifTest.safeDelete();
+            ifTest.replaceAndDelete(newIfTest);
         }
     }
 
@@ -895,5 +1128,34 @@ public abstract class LoopTransformations {
             }
         }
         return parentLoopPhi;
+    }
+
+    public static boolean isUnrollableLoop(LoopEx loop) {
+        LoopBeginNode curBeginNode = loop.loopBegin();
+        boolean isCanonical = false;
+        if (curBeginNode.isMainLoop()) {
+            // Flow-less loops to partial unroll for now
+            if (loop.loop().getBlocks().size() < 3) {
+                isCanonical = true;
+            }
+        }
+        if (isCanonical) {
+            for (PhiNode phi : curBeginNode.valuePhis()) {
+                if (phi instanceof MemoryPhiNode) {
+                    continue;
+                }
+                InductionVariable iv = loop.getInductionVariables().get(phi);
+                if (iv instanceof DerivedInductionVariable) {
+                    isCanonical = false;
+                    break;
+                }
+                if (iv == null) {
+                    // No unclassified derived induction variables
+                    isCanonical = false;
+                    break;
+                }
+            }
+        }
+        return isCanonical;
     }
 }

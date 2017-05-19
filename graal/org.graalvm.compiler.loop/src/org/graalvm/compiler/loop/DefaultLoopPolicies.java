@@ -47,10 +47,7 @@ import org.graalvm.compiler.nodes.VirtualState.VirtualClosure;
 import org.graalvm.compiler.nodes.cfg.Block;
 import org.graalvm.compiler.nodes.cfg.ControlFlowGraph;
 import org.graalvm.compiler.nodes.debug.ControlFlowAnchorNode;
-import org.graalvm.compiler.nodes.extended.GuardingNode;
 import org.graalvm.compiler.nodes.java.TypeSwitchNode;
-import org.graalvm.compiler.nodes.memory.ReadNode;
-import org.graalvm.compiler.nodes.memory.WriteNode;
 import org.graalvm.compiler.options.Option;
 import org.graalvm.compiler.options.OptionType;
 import org.graalvm.compiler.options.OptionValues;
@@ -111,12 +108,20 @@ public class DefaultLoopPolicies implements LoopPolicies {
         }
         OptionValues options = loop.entryPoint().getOptions();
         CountedLoopInfo counted = loop.counted();
+        LoopBeginNode loopBegin = loop.loopBegin();
         int maxNodes = (counted.isExactTripCount() && counted.isConstantExactTripCount()) ? ExactFullUnrollMaxNodes.getValue(options) : FullUnrollMaxNodes.getValue(options);
         maxNodes = Math.min(maxNodes, Math.max(0, MaximumDesiredSize.getValue(options) - loop.loopBegin().graph().getNodeCount()));
         int size = Math.max(1, loop.size() - 1 - loop.loopBegin().phis().count());
-        int unrollFactor = 1; // fill in with counted data
-        if (unrollFactor < UnrollMaxIterations.getValue(options) && size * unrollFactor <= maxNodes) {
-            // check whether we're allowed to unroll this loop
+        int unrollFactor = loopBegin.getUnrollFactor();
+        if (unrollFactor == 1) {
+            loopBegin.setLoopOrigFrequency(loopBegin.loopFrequency());
+        }
+        if (unrollFactor < UnrollMaxIterations.getValue(options) && size <= maxNodes) {
+            // Will the next unroll fit?
+            if ((int) loopBegin.loopOrigFrequency() < (unrollFactor * 2)) {
+                return false;
+            }
+            // Check whether we're allowed to unroll this loop
             for (Node node : loop.inside().nodes()) {
                 if (node instanceof ControlFlowAnchorNode) {
                     return false;
@@ -144,29 +149,9 @@ public class DefaultLoopPolicies implements LoopPolicies {
             // Check if there are any range checks to eliminate.
             // We do not need to worry about loop exits as unswitching has already happened.
             int rangeCheckCount = 0;
-            for (Node node : loop.inside().nodes()) {
-                if (node instanceof ReadNode) {
-                    ReadNode readNode = (ReadNode) node;
-                    if (readNode.getGuard() != null) {
-                        GuardingNode guarding = readNode.getGuard();
-                        if (guarding instanceof GuardNode) {
-                            GuardNode guard = (GuardNode) guarding;
-                            if (guard.getReason() == BoundsCheckException) {
-                                rangeCheckCount++;
-                            }
-                        }
-                    }
-                } else if (node instanceof WriteNode) {
-                    WriteNode writeNode = (WriteNode) node;
-                    if (writeNode.getGuard() != null) {
-                        GuardingNode guarding = writeNode.getGuard();
-                        if (guarding instanceof GuardNode) {
-                            GuardNode guard = (GuardNode) guarding;
-                            if (guard.getReason() == BoundsCheckException) {
-                                rangeCheckCount++;
-                            }
-                        }
-                    }
+            for (GuardNode guard : loop.inside().nodes().filter(GuardNode.class)) {
+                if (guard.getReason() == BoundsCheckException) {
+                    rangeCheckCount++;
                 }
             }
             if (rangeCheckCount > 0) {

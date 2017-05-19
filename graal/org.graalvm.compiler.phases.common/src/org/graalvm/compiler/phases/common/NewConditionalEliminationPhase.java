@@ -138,10 +138,12 @@ public class NewConditionalEliminationPhase extends BasePhase<PhaseContext> {
             if (beginNode instanceof AbstractMergeNode && anchorBlock != b) {
                 AbstractMergeNode mergeNode = (AbstractMergeNode) beginNode;
                 for (GuardNode guard : mergeNode.guards().snapshot()) {
-                    try (DebugCloseable closeable = guard.withNodeSourcePosition()) {
-                        GuardNode newlyCreatedGuard = new GuardNode(guard.getCondition(), anchorBlock.getBeginNode(), guard.getReason(), guard.getAction(), guard.isNegated(), guard.getSpeculation());
-                        GuardNode newGuard = mergeNode.graph().unique(newlyCreatedGuard);
-                        guard.replaceAndDelete(newGuard);
+                    if (guard.isMotionable()) {
+                        try (DebugCloseable closeable = guard.withNodeSourcePosition()) {
+                            GuardNode newlyCreatedGuard = new GuardNode(guard.getCondition(), anchorBlock.getBeginNode(), guard.getReason(), guard.getAction(), guard.isNegated(), guard.getSpeculation());
+                            GuardNode newGuard = mergeNode.graph().unique(newlyCreatedGuard);
+                            guard.replaceAndDelete(newGuard);
+                        }
                     }
                 }
             }
@@ -162,6 +164,9 @@ public class NewConditionalEliminationPhase extends BasePhase<PhaseContext> {
 
                 if (!trueGuards.isEmpty()) {
                     for (GuardNode guard : node.falseSuccessor().guards().snapshot()) {
+                        if (guard.isMotionable() == false) {
+                            continue;
+                        }
                         GuardNode otherGuard = trueGuards.get(guard.getCondition());
                         if (otherGuard != null && guard.isNegated() == otherGuard.isNegated()) {
                             JavaConstant speculation = otherGuard.getSpeculation();
@@ -171,9 +176,13 @@ public class NewConditionalEliminationPhase extends BasePhase<PhaseContext> {
                                 // Cannot optimize due to different speculations.
                                 continue;
                             }
+                            if (otherGuard.isMotionable() == false) {
+                                continue;
+                            }
                             try (DebugCloseable closeable = guard.withNodeSourcePosition()) {
                                 GuardNode newlyCreatedGuard = new GuardNode(guard.getCondition(), anchorBlock.getBeginNode(), guard.getReason(), guard.getAction(), guard.isNegated(), speculation);
                                 GuardNode newGuard = node.graph().unique(newlyCreatedGuard);
+
                                 if (otherGuard.isAlive()) {
                                     otherGuard.replaceAndDelete(newGuard);
                                 }
@@ -252,19 +261,21 @@ public class NewConditionalEliminationPhase extends BasePhase<PhaseContext> {
         }
 
         protected void processGuard(GuardNode node) {
-            if (!tryProveGuardCondition(node, node.getCondition(), (guard, result, guardedValueStamp, newInput) -> {
-                if (result != node.isNegated()) {
-                    node.replaceAndDelete(guard.asNode());
-                } else {
-                    DeoptimizeNode deopt = node.graph().add(new DeoptimizeNode(node.getAction(), node.getReason(), node.getSpeculation()));
-                    AbstractBeginNode beginNode = (AbstractBeginNode) node.getAnchor();
-                    FixedNode next = beginNode.next();
-                    beginNode.setNext(deopt);
-                    GraphUtil.killCFG(next);
+            if (node.isMotionable()) {
+                if (!tryProveGuardCondition(node, node.getCondition(), (guard, result, guardedValueStamp, newInput) -> {
+                    if (result != node.isNegated()) {
+                        node.replaceAndDelete(guard.asNode());
+                    } else {
+                        DeoptimizeNode deopt = node.graph().add(new DeoptimizeNode(node.getAction(), node.getReason(), node.getSpeculation()));
+                        AbstractBeginNode beginNode = (AbstractBeginNode) node.getAnchor();
+                        FixedNode next = beginNode.next();
+                        beginNode.setNext(deopt);
+                        GraphUtil.killCFG(next);
+                    }
+                    return true;
+                })) {
+                    registerNewCondition(node.getCondition(), node.isNegated(), node);
                 }
-                return true;
-            })) {
-                registerNewCondition(node.getCondition(), node.isNegated(), node);
             }
         }
 

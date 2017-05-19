@@ -133,6 +133,7 @@ public final class IfNode extends ControlSplitNode implements Simplifiable, LIRL
     public boolean isNotSimplifiable() {
         return notSimplifiable;
     }
+
     public void setNotSimplifiable() {
         notSimplifiable = true;
     }
